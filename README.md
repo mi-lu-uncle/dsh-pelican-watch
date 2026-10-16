@@ -182,7 +182,7 @@ Deleting files there is safe; the panel always lists what is on disk.
 | File | Role |
 |---|---|
 | `lib/index.js` | Host half: multi-model scheduler, storage, scoring, `/api/pelican-watch/*` routes |
-| `lib/client.js` | Client half: the read-only flat board (one band per model with all its drawings); actions sit on the Settings side (React) |
+| `lib/client.js` | Client half: the flat board (one band per model with all its drawings) plus the gear-opened settings sheet (React) |
 | `cordis.patch.yml` | Bundle patch that mounts the package as one host row |
 | `package.json` | npm metadata + `dsh.bundle`/`dsh.client`/`dsh.compatibility` |
 | `test/pelican.test.mjs` | Offline test: per-model roll-up, provider parsing, target selection, schedule control, route wiring |
