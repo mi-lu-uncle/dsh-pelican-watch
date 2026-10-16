@@ -544,7 +544,9 @@ function renderSwitcher(){
 }
 function syncUrl(){
   const q = new URLSearchParams({ variant:state.variant, render:state.render, theme:state.theme, state:state.status });
-  history.replaceState(null, '', location.pathname + '?' + q.toString());
+  // file:// 下 replaceState 可能因 origin 为 null 抛 SecurityError：吞掉即可，
+  // 方案切换本身已经生效，只是地址栏不同步。
+  try { history.replaceState(null, '', location.pathname + '?' + q.toString()); } catch { /* 以本地文件打开时的保护 */ }
 }
 function applyUrl(){
   const q = new URLSearchParams(location.search);
