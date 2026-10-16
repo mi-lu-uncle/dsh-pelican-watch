@@ -1,13 +1,14 @@
-// Render smoke test for the client half — the panel is ~900 lines of UI that
-// no other test touches, and the headline promise of this layout is a negative
-// one ("the read-only board contains no clickable element"), so it has to be
+// Render smoke test for the client half — the panel is ~850 lines of UI that
+// no other test touches, and its layout promise is a negative one ("reading the
+// board costs no click; the actions are behind one gear"), so it has to be
 // asserted rather than eyeballed.
 //
 // There is no React in this repo, so this test supplies a minimal one: enough
-// hooks to render one component through several state updates, and a walker
-// that turns the element tree into HTML-ish text. Effects are collected and
-// flushed so the panel's `fetch('/list')` actually lands, exactly like the real
-// mount sequence.
+// hooks to render one component through several state updates, a walker that
+// turns the element tree into HTML-ish text, and captured click handlers so a
+// button can actually be pressed (that is how the settings modal is tested).
+// Effects are collected and flushed so the panel's `fetch('/list')` lands,
+// exactly like the real mount sequence.
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 
@@ -36,13 +37,12 @@ const react = {
 const styleStub = () => ({ setAttribute() {}, remove() {} });
 globalThis.document = { createElement: styleStub, head: { appendChild() {} } };
 globalThis.window = { innerHeight: 900, addEventListener() {}, removeEventListener() {} };
-const timers = [];
-globalThis.setInterval = () => { const id = timers.length; timers.push(id); return id; };
+globalThis.setInterval = () => 0;
 globalThis.clearInterval = () => {};
 globalThis.setTimeout = () => 0;
 
-/** Walk the element tree into text, recording every tag and click handler. */
-const seen = { tags: [], onclick: 0, imgs: [] };
+/** Walk the element tree into text, recording tags, images and live buttons. */
+const seen = { tags: [], onclick: 0, imgs: [], buttons: [] };
 function render(node) {
   if (node === null || node === undefined || node === false || node === true) return '';
   if (typeof node === 'string' || typeof node === 'number') return String(node);
@@ -53,12 +53,21 @@ function render(node) {
   if (typeof props.onClick === 'function') seen.onclick += 1;
   if (type === 'img') seen.imgs.push(props.src);
   const children = render(props.children);
+  if (type === 'button') {
+    seen.buttons.push({
+      label: children.replace(/<[^>]*>/g, ''),
+      title: props.title,
+      disabled: props.disabled === true,
+      handler: props.onClick,
+    });
+  }
   const attrs = [];
   if (props.className) attrs.push(`class="${props.className}"`);
   if (typeof props.title === 'string') attrs.push(`title="${props.title}"`);
   if (typeof props.src === 'string') attrs.push(`src="${props.src}"`);
   if (props.disabled) attrs.push('disabled');
   if (props.value !== undefined) attrs.push(`value="${props.value}"`);
+  if (props.type) attrs.push(`type="${props.type}"`);
   return `<${type}${attrs.length ? ' ' + attrs.join(' ') : ''}>${children}</${type}>`;
 }
 
@@ -92,10 +101,10 @@ const fakeCtx = {
   },
 };
 clientExports.apply(fakeCtx);
-assert.deepEqual(slots.map((s) => s.config.name).sort(), ['main', 'settings.section', 'sidebar.panellist'],
-  'registers the sidebar icon, the main board and the settings section');
+assert.deepEqual(slots.map((s) => s.config.name).sort(), ['main', 'sidebar.panellist'],
+  'registers the sidebar icon and the panel — no DSH Settings section');
 const mainSlot = slots.find((s) => s.config.name === 'main').component;
-const settingsSlot = slots.find((s) => s.config.name === 'settings.section').component;
+const t = fakeCtx.locale.bind('pelicanWatch');
 
 // ── fixture: the real payload shape (3 targets, one of them timing out) ─────
 const IMAGES = [
@@ -121,31 +130,54 @@ const basePayload = {
   timeoutSeconds: 300,
   concurrency: 3, nextRunAt: Date.now() + 600000, lastRunAt: '2026-10-16T07:40:05.501Z', lastError: null,
 };
+const CATALOG = {
+  ok: true,
+  providers: [{
+    provider: 'taotoken', baseURL: 'https://taotoken.net/api/v1', apiKeyEnv: 'TAOTOKEN_API_KEY',
+    keyAvailable: true, models: ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'],
+  }],
+};
 
 let payload = basePayload;
 globalThis.fetch = async (url) => ({
   ok: true, status: 200,
-  json: async () => payload,
+  json: async () => (String(url).includes('/catalog') ? CATALOG : payload),
   text: async () => '<!doctype html><html></html>',
 });
 
-/** Mount a slot component, flush effects, let the /list fetch land, re-render. */
-async function mount(component, props) {
-  hooks = []; hookIndex = 0; pendingEffects = [];
-  seen.tags = []; seen.onclick = 0; seen.imgs = [];
-  const element = component({ t: fakeCtx.locale.bind('pelicanWatch'), ...props });
-  let out = render(element);
-  for (const effect of pendingEffects.slice()) { try { effect(); } catch { /* ignore */ } }
-  for (let i = 0; i < 5; i += 1) await new Promise((r) => queueMicrotask(r));
+const reset = () => {
   hookIndex = 0; pendingEffects = [];
-  out = render(component({ t: fakeCtx.locale.bind('pelicanWatch'), ...props }));
+  seen.tags = []; seen.onclick = 0; seen.imgs = []; seen.buttons = [];
+};
+const draw = (props) => render(mainSlot({ t, ...props }));
+const settle = async () => { for (let i = 0; i < 5; i += 1) await new Promise((r) => queueMicrotask(r)); };
+
+/** Mount the panel, flush effects, let the /list fetch land, re-render. */
+async function mount(props = {}) {
+  hooks = []; reset();
+  let out = draw(props);
+  for (const effect of pendingEffects.slice()) { try { effect(); } catch { /* ignore */ } }
+  await settle();
+  reset();
+  out = draw(props);
   return out;
 }
 
-// ── 1. the read-only board: every model, every drawing, nothing to click ────
+/** Press a button by (substring of) its label, let the request land, redraw. */
+async function press(label, props = {}) {
+  const button = seen.buttons.find((b) => b.label.includes(label));
+  assert.ok(button, `a button labelled “${label}” exists`);
+  assert.equal(typeof button.handler, 'function', `“${label}” is clickable`);
+  button.handler();
+  await settle();
+  reset();
+  return draw(props);
+}
+
+// ── 1. the board: every model, every drawing, nothing hidden behind a click ─
 {
   payload = basePayload;
-  const out = await mount(mainSlot, {});
+  const out = await mount();
   assert.ok(!/undefined|NaN/.test(out), 'no undefined/NaN leaked into the board');
   assert.ok(out.includes('每个模型的全部画作'), 'board heading is rendered');
   for (const target of TARGETS) assert.ok(out.includes(target.model), `band for ${target.model}`);
@@ -157,20 +189,39 @@ async function mount(component, props) {
   assert.ok(out.includes('没出图 3 次'), 'the model that never returns reports its refusal count');
   assert.ok(out.includes('超过 300 秒没有返回'), 'the timeout reason is printed on the page');
   assert.ok(out.includes('145.0s') && out.includes('132.0s'), 'per-drawing duration is printed');
-  assert.equal(seen.tags.filter((tag) => tag === 'button').length, 0, 'the read-only board renders no button at all');
-  assert.equal(seen.onclick, 0, 'the read-only board attaches no click handler at all');
+  // The whole click budget of the panel: two header actions + one button per
+  // drawing (which merely opens the bigger sandboxed view — optional).
+  assert.equal(seen.buttons.length, 2 + IMAGES.length, 'only the header actions and one button per drawing');
+  assert.ok(seen.buttons.some((b) => b.label.includes('全部检测一遍')), 'the header offers the manual probe');
+  assert.ok(seen.buttons.some((b) => b.label.includes('设置')), 'the header offers the gear');
+  assert.ok(seen.buttons
+    .filter((b) => b.title === '看原始页面').length === IMAGES.length, 'each drawing opens the bigger view');
+  assert.ok(seen.buttons
+    .filter((b) => b.title !== '看原始页面' && !b.label.includes('全部检测一遍') && !b.label.includes('设置')).length === 0,
+    'nothing else in the panel is clickable');
+  assert.ok(!out.includes('检测节奏') && !out.includes('保存间隔'), 'the settings modal stays closed');
 }
 
-// ── 2. the settings side keeps the actions ─────────────────────────────────
+// ── 2. the gear opens the settings modal, which holds every action ──────────
+// Probing costs tokens and the model list changes often, so this must be one
+// click away from the board — but inside the panel, not in DSH Settings.
 {
   payload = basePayload;
-  const out = await mount(settingsSlot, {});
-  assert.ok(seen.tags.includes('button'), 'the settings side has buttons');
-  assert.ok(out.includes('选择模型') && out.includes('全部检测一遍'), 'picker and manual probe are offered');
-  assert.ok(seen.onclick > 0, 'settings tiles open the sandboxed viewer');
+  await mount();
+  const out = await press('设置');
+  assert.ok(out.includes('检测节奏'), 'pace controls are in the modal');
+  assert.ok(out.includes('检测的模型'), 'and so is the model list');
+  assert.ok(out.includes('暂停自动检测'), 'auto probing can be paused from here');
+  assert.ok(out.includes('保存间隔') && out.includes('停止本轮'), 'interval save and stop are offered');
+  assert.ok(out.includes('间隔') && out.includes('value="30"'), 'the interval input shows the host value');
+  assert.ok(/<button[^>]*disabled[^>]*>停止本轮/.test(out), '“stop this pass” is disabled while nothing runs');
+  assert.ok(out.includes('自动检测开着') || out.includes('下次'), 'the schedule state is reported');
+  assert.ok(out.includes('deepseek-v4-flash-vision-exp') && out.includes('taotoken'), 'the catalog is listed');
+  assert.ok(out.includes('type="checkbox"') && out.includes('保存模型'), 'models can be ticked and saved');
+  assert.ok(out.includes('关闭') && out.includes('保存模型'), 'the modal can be closed and the model list saved');
 }
 
-// ── 3. a pass in flight is legible (progress, waited so far, cap) ──────────
+// ── 3. a pass in flight is legible (progress, waited so far, cap) ───────────
 {
   payload = {
     ...basePayload,
@@ -178,25 +229,26 @@ async function mount(component, props) {
     inflight: ['deepseek-flash', 'deepseek-v4-flash'],
     inflightSince: { 'deepseek-flash': Date.now() - 72000, 'deepseek-v4-flash': Date.now() - 72000 },
   };
-  const out = await mount(mainSlot, {});
+  const out = await mount();
   assert.ok(out.includes('已完成 1/3'), 'progress is shown');
   assert.ok(out.includes('启动首轮检测'), 'the boot round is labelled');
   assert.ok(out.includes('已等') && out.includes('上限'), 'waited-so-far and the cap are shown');
   assert.ok(out.includes('正在检测'), 'the in-flight models are named');
-  assert.equal(seen.onclick, 0, 'still nothing to click while probing');
+  assert.ok(seen.buttons.some((b) => b.label.includes('正在检测') && b.disabled === true),
+    'the probe button is disabled while running');
 }
 
-// ── 4. empty states say what to do, without a button ──────────────────────
+// ── 4. empty states say what to do ─────────────────────────────────────────
 {
   payload = { ...basePayload, images: [], summary: [], targets: [] };
-  const out = await mount(mainSlot, {});
+  const out = await mount();
   assert.ok(out.includes('还没有选模型'), 'no targets → tells the user where to pick models');
-  assert.equal(seen.onclick, 0, 'empty board also has nothing to click');
+  assert.ok(out.includes('点右上角「设置」'), 'and points at the gear');
 
   payload = { ...basePayload, images: [], summary: [
     { model: 'deepseek-flash', provider: 'taotoken', count: 1, avgMs: null, lastMs: null, refusals: 1, lastTime: null },
   ] };
-  const out2 = await mount(mainSlot, {});
+  const out2 = await mount();
   assert.ok(out2.includes('还没有画'), 'targets but no drawings → explains the scheduler');
 }
 
@@ -205,59 +257,45 @@ async function mount(component, props) {
   payload = { ...basePayload, images: [], errors: {}, summary: [
     { model: 'deepseek-v4-flash', provider: 'taotoken', count: 6, avgMs: null, lastMs: null, refusals: 6, lastTime: null },
   ], targets: [TARGETS[1]] };
-  const out = await mount(mainSlot, {});
+  const out = await mount();
   assert.ok(out.includes('没出图'), 'status reads “no drawing”, not “ok” (the error map is empty after a restart)');
   assert.ok(!out.includes('>正常<'), 'no green status for a model with zero drawings');
   assert.ok(out.includes('没出图 6 次'), 'the refusal count is shown');
 }
 
-// ── 6. the pace controls live on the settings side only ────────────────────
-// Probe passes cost tokens, so pausing the schedule and cutting off a running
-// pass have to be reachable — without putting a button back on the board.
-{
-  payload = basePayload;
-  const out = await mount(settingsSlot, {});
-  assert.ok(out.includes('检测节奏'), 'the pace strip is on the settings side');
-  assert.ok(out.includes('暂停自动检测'), 'auto probing can be paused');
-  assert.ok(out.includes('保存间隔') && out.includes('停止本轮'), 'interval save and stop are offered');
-  assert.ok(out.includes('间隔') && out.includes('value="30"'), 'the interval input shows the host value');
-  assert.ok(/<button[^>]*disabled[^>]*>停止本轮/.test(out), '“stop this pass” is disabled while nothing runs');
-  assert.ok(out.includes('自动检测开着') || out.includes('下次'), 'the strip reports the schedule state');
-}
-
-// ── 7. paused: the board says so, still with nothing to click ─────────────
+// ── 6. paused: the board says so; resuming is one gear click away ──────────
 {
   payload = { ...basePayload, autoEnabled: false, nextRunAt: null };
-  const out = await mount(mainSlot, {});
-  assert.ok(out.includes('自动检测已暂停'), 'the read-only board shows that probing is paused');
-  assert.ok(out.includes('在「设置 → 鹈鹕监视」里恢复'), 'and where to turn it back on');
-  assert.equal(seen.onclick, 0, 'a paused board is still click-free');
-  const settings = await mount(settingsSlot, {});
-  assert.ok(settings.includes('恢复自动检测'), 'settings offers to resume');
+  const out = await mount();
+  assert.ok(out.includes('自动检测已暂停'), 'the board shows that probing is paused');
+  assert.ok(out.includes('点右上角「设置」恢复'), 'and points at the gear to turn it back on');
+  assert.ok(!out.includes('保存间隔'), 'a paused board is still just a board');
+  const settings = await press('设置', {});
+  assert.ok(settings.includes('恢复自动检测'), 'the modal offers to resume');
   assert.ok(settings.includes('不会再消耗 token'), 'and says what pausing means for the bill');
 }
 
-// ── 8. stopping a pass is visible while it happens ────────────────────────
+// ── 7. stopping a pass is visible while it happens ────────────────────────
 {
   payload = { ...basePayload, running: true, stopping: true, done: 1, total: 3, inflight: ['deepseek-flash'] };
-  const out = await mount(settingsSlot, {});
+  const out = await mount();
   assert.ok(out.includes('正在停止'), 'the progress line says it is stopping');
   assert.ok(!out.includes('正在检测 deepseek-flash'), 'and stops naming models as “probing”');
-  assert.ok(!/<button[^>]*disabled[^>]*>停止本轮/.test(out), '“stop this pass” is live while a pass runs');
+  const settings = await press('设置', {});
+  assert.ok(!/<button[^>]*disabled[^>]*>停止本轮/.test(settings), '“stop this pass” is live while a pass runs');
 }
 
-// ── 9. a model the user cut off is not reported as a timeout ──────────────
+// ── 8. a model the user cut off is not reported as a timeout ──────────────
 {
   payload = {
     ...basePayload,
     stopped: ['deepseek-v4-flash'],
     errors: { 'deepseek-v4-flash': '已手动停止（本轮检测被中断）' },
   };
-  const out = await mount(mainSlot, {});
+  const out = await mount();
   assert.ok(out.includes('>已停止<'), 'the band says stopped');
   assert.ok(!out.includes('>超时<'), 'and not “timeout”');
   assert.ok(out.includes('已手动停止'), 'while still showing why');
-  assert.equal(seen.onclick, 0, 'a stopped board is still click-free');
 }
 
 console.log('pelican client render: OK');

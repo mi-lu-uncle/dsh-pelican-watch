@@ -6,7 +6,7 @@ A DeepSeek Harness **community plugin** that runs a long-term
 **model-quality probe** (降智监测) on a schedule, across **any number of
 models**:
 
-- **Pick your models** — **Settings → Pelican Watch** lists every model the
+- **Pick your models** — the gear in the panel's top-right corner lists every model the
   configured providers report (live `/models` discovery, merged with the models
   in your DSH profile) and probes a multi-selected set, each model through its
   own provider and API key.
@@ -24,10 +24,10 @@ models**:
 - **Run state in the header** — while probing: “n/m done”, which models are in
   flight, how long the slowest has waited (m:ss) and the timeout cap (m:ss), so a
   slow model and a stuck one are told apart at a glance.
-- **Actions live in Settings** — picking models, probing right now and opening one
-  drawing's original page all sit under Settings → Pelican Watch; the main board
-  stays pure viewing.
-- **Stop it, retune it** — Settings → Pelican Watch can **pause / resume automatic
+- **One gear button** — the panel's own top-right corner opens a settings sheet:
+  pick models, probe now, open one drawing's original page. The board below stays
+  pure viewing, so nothing has to be clicked to be read.
+- **Stop it, retune it** — that same sheet can **pause / resume automatic
   probing**, change the **interval** (1–1440 minutes), and **stop the pass that is
   running right now**: requests in flight are aborted, models that had not started
   are skipped without a request being sent. Pausing is written to
@@ -57,16 +57,16 @@ Note: `link:`-installed plugins are not watched by HMR, so editing
 
 ## Choosing models
 
-「选择模型」 (under Settings → Pelican Watch) opens the picker: every provider found in your DSH profiles, with
+The gear in the panel's top-right corner opens the settings sheet: every provider found in your DSH profiles, with
 the models it serves (its own `/models` endpoint, merged with whatever the
-profile already lists). Tick any number of models and **Save** — from the next
+profile already lists). Tick any number of models and **Save models** — from the next
 cycle on each selected model draws its own picture and gets its own band on the
 board.
 
 That selection lives in `dir/settings.json` and is what the scheduler uses;
 `config.model` / `config.targets` only seed the first run. The same file holds
-two knobs that decide what you spend, both changeable from Settings → Pelican
-Watch without touching any config file:
+two knobs that decide what you spend, both changeable from the panel's gear
+without touching any config file:
 
 | key | default | meaning |
 | --- | --- | --- |
