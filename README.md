@@ -1,5 +1,7 @@
 # @mi-lu-uncle/dsh-pelican-watch
 
+English | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
+
 A DeepSeek Harness **community plugin** that runs a long-term
 **model-quality probe** (降智监测) on a schedule:
 
