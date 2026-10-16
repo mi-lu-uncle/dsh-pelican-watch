@@ -475,6 +475,9 @@ assert.deepEqual(loadSettings(path.join(tmp, 'no-settings')), {}, 'missing setti
   assert.equal(mid.running, true, 'the pass is observable while it runs');
   assert.equal(mid.total, 3);
   assert.ok(mid.inflight.length >= 1 && mid.done < 3, `progress is reported (inflight ${mid.inflight.length}, done ${mid.done})`);
+  assert.ok(typeof mid.startedAt === 'number', 'the pass reports when it started');
+  assert.ok(mid.inflight.every((model) => typeof mid.inflightSince[model] === 'number'),
+    'each in-flight model reports since when it has been waiting');
 
   await new Promise((r) => setTimeout(r, 500));
   const endRes = fakeRes();
