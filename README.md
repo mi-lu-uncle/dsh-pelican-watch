@@ -53,7 +53,27 @@ IQ board.
 
 That selection lives in `dir/settings.json` and is what the scheduler uses;
 `config.model` / `config.targets` only seed the very first run. At most 12
-models are probed per cycle, sequentially, one drawing each.
+models are probed per cycle — `concurrency` of them at the same time (3 by
+default), one drawing each.
+
+## Speed and timeouts
+
+- **Models run in parallel** (3 at a time by default), so one slow model no
+  longer delays the others: every drawing is written to disk the moment it
+  arrives and shows up in the panel within seconds.
+- **Each request has its own timeout** (`timeoutSeconds`, default 180). A model
+  that exceeds it is reported as `超过 N 秒没有返回` on its own IQ card instead of
+  hanging the whole pass. Reasoning models can genuinely be slow — measured
+  against one provider: `qwen3.7-max` ~52s, `deepseek-flash` ~121s (15k of those
+  completion tokens were reasoning), while `glm-5.3-flash` sometimes exceeded
+  4 minutes.
+- **A timeout or HTTP error is not a drawing**: nothing is saved and no score is
+  recorded, because that is an infrastructure fact rather than model quality. A
+  model that *answers* without an SVG (a refusal) is saved and scored — that is
+  a real quality signal.
+- `maxTokens` is not sent by default: reasoning models spend tens of thousands of
+  completion tokens before they draw, and a tight ceiling would truncate the SVG
+  instead of speeding anything up.
 
 ## Configuration
 
@@ -71,6 +91,9 @@ Defaults match the usual profile setup; override any of them on a
     #   - { provider: taotoken, baseURL: https://taotoken.net/api/v1, apiKeyEnv: TAOTOKEN_API_KEY, model: glm-5.3-flash }
     intervalMinutes: 30                  # drawing cadence
     maxImages: 12                        # history depth (per model ≈6h at 30min)
+    timeoutSeconds: 180                  # per-request ceiling; raise it for slow models
+    concurrency: 3                       # how many models are probed at once
+    # maxTokens: 8192                    # optional; unset by default (see below)
     dir: ~/.dsh/pelican-watch            # where drawings are saved
     runOnStart: true                     # draw once ~8s after boot
     # temperature: 0.7                   # optional; omitted by default

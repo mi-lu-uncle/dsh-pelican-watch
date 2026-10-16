@@ -31,7 +31,14 @@ dsh plugin --profile desktop add /absolute/path/to/dsh-pelican-watch
 
 「モデルを選択」でピッカーが開きます：DSH プロファイルから見つけた各プロバイダと、それが提供するモデル（プロバイダ自身の `/models` を呼び出し、プロファイルの一覧と統合）を表示します。任意の数をチェックして**保存**すると、次の周期から選択した各モデルが 1 枚ずつ描き、IQ ボードにそれぞれ行を持ちます。
 
-この選択は `dir/settings.json` に保存され、スケジューラはこれを正とします。`config.model` / `config.targets` は初回のみの初期値です。1 周期で最大 12 モデルを、順番に 1 枚ずつプローブします。
+この選択は `dir/settings.json` に保存され、スケジューラはこれを正とします。`config.model` / `config.targets` は初回のみの初期値です。1 周期で最大 12 モデルを、**`concurrency` 個同時に**（デフォルト 3）プローブし、各 1 枚ずつ描きます。
+
+## 速度とタイムアウト
+
+- **モデルは並列実行**（デフォルト 3 同時）なので、遅いモデルが他を待たせません。描き上がった作品はその場でディスクに保存され、数秒以内にパネルに現れます。
+- **リクエストごとに独立したタイムアウト**があります（`timeoutSeconds`、デフォルト 180 秒）。超えたモデルは**そのモデル自身の** IQ カードに「N 秒を超えて応答なし」と表示され、周回全体を止めません。推論モデルは実際に遅いことがあります — 同じプロバイダでの実測：`qwen3.7-max` 約 52 秒、`deepseek-flash` 約 121 秒（うち約 1.5 万トークンが思考）、`glm-5.3-flash` は 4 分を超えることも。
+- **タイムアウトや HTTP エラーは作品ではありません**：保存も採点もしません（インフラ側の事象でありモデル品質ではないため）。一方、**答えたが描かなかった**（拒否）場合は保存して低い点を付けます — これが実際の品質シグナルです。
+- `maxTokens` はデフォルトで送信しません：推論モデルは描き始める前に数万 completion トークンを消費することがあり、上限を設けても速くならず SVG が切れるだけです。
 
 ## 設定
 
@@ -48,6 +55,9 @@ dsh plugin --profile desktop add /absolute/path/to/dsh-pelican-watch
     #   - { provider: taotoken, baseURL: https://taotoken.net/api/v1, apiKeyEnv: TAOTOKEN_API_KEY, model: glm-5.3-flash }
     intervalMinutes: 30                  # 作画間隔
     maxImages: 12                        # モデルごとの履歴の深さ（30 分間隔なら約 6 時間）
+    timeoutSeconds: 180                  # リクエストごとの上限。遅いモデル向けに増やす
+    concurrency: 3                       # 同時にプローブするモデル数
+    # maxTokens: 8192                    # 任意。デフォルトでは送信しない（下記参照）
     dir: ~/.dsh/pelican-watch            # 保存ディレクトリ
     runOnStart: true                     # 起動後約 8 秒で最初の 1 周を描く
     # temperature: 0.7                   # 任意。デフォルトではパラメータ自体を送らない

@@ -31,7 +31,14 @@ dsh plugin --profile desktop add /absolute/path/to/dsh-pelican-watch
 
 面板上的「选择模型」会打开选择器：列出你 DSH profile 里发现的每个 provider，以及它提供的模型（调该 provider 自己的 `/models`，并与 profile 里已有的清单合并）。勾选任意多个后点**保存**——从下一个周期起，每个选中的模型各画一张，并在智商看板上各占一行。
 
-这份选择存在 `dir/settings.json`，调度器以它为准；`config.model` / `config.targets` 只用于第一次运行的初始值。每轮最多探测 12 个模型，逐个串行、每个一张。
+这份选择存在 `dir/settings.json`，调度器以它为准；`config.model` / `config.targets` 只用于第一次运行的初始值。每轮最多探测 12 个模型，**`concurrency` 个同时进行**（默认 3 个），每个模型各画一张。
+
+## 速度与超时
+
+- **模型并行检测**（默认同时 3 个）：一个慢模型不再拖住其他人——每张画一画完就落盘，几秒内出现在面板里。
+- **每个请求有独立超时**（`timeoutSeconds`，默认 180 秒）。超时只在**它自己的**智商卡片上显示「超过 N 秒没有返回」，不会卡住整轮。推理型模型确实可能很慢——同一 provider 实测：`qwen3.7-max` 约 52 秒、`deepseek-flash` 约 121 秒（其中 1.5 万 token 是"思考"），而 `glm-5.3-flash` 有时超过 4 分钟。
+- **超时或 HTTP 报错不算画**：既不落盘也不计分，因为那是基础设施问题、不是模型质量。而模型**答了却没画**（拒答）会被保存出来并计低分——那才是真实的质量信号。
+- 默认**不发送** `maxTokens`：推理型模型动笔前可能花掉几万 completion token，卡一个上限只会把 SVG 截断，并不会更快。
 
 ## 配置
 
@@ -48,6 +55,9 @@ dsh plugin --profile desktop add /absolute/path/to/dsh-pelican-watch
     #   - { provider: taotoken, baseURL: https://taotoken.net/api/v1, apiKeyEnv: TAOTOKEN_API_KEY, model: glm-5.3-flash }
     intervalMinutes: 30                  # 作画间隔
     maxImages: 12                        # 每个模型的历史深度（30 分钟一张 ≈ 6 小时）
+    timeoutSeconds: 180                  # 单个请求超时；慢模型可调大
+    concurrency: 3                       # 同时检测几个模型
+    # maxTokens: 8192                    # 可选；默认不发送（见下文）
     dir: ~/.dsh/pelican-watch            # 保存目录
     runOnStart: true                     # 启动后 ~8 秒先画一轮
     # temperature: 0.7                   # 可选；默认不带该参数

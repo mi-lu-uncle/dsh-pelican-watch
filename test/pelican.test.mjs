@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   apply,
+  pool,
+  chatCompletion,
   stripFences,
   extractSvg,
   modelSafe,
@@ -243,6 +245,43 @@ try {
 assert.ok(PROMPT.includes('鹈鹕') && PROMPT.includes('自行车'));
 assert.ok(!/skill|工具|agent/i.test(PROMPT), 'prompt stays a pure drawing task');
 
+// ---- bounded concurrency ----
+{
+  const seen = [];
+  let inFlight = 0;
+  let peak = 0;
+  await pool([1, 2, 3, 4, 5], 2, async (n) => {
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    await new Promise((r) => setTimeout(r, 10));
+    seen.push(n);
+    inFlight -= 1;
+  });
+  assert.deepEqual(seen.sort((a, b) => a - b), [1, 2, 3, 4, 5], 'every item runs');
+  assert.ok(peak <= 2, `never more than the limit in flight (peak ${peak})`);
+  await pool([], 3, async () => { throw new Error('must not run'); });
+}
+
+// ---- a hung provider is reported as a timeout, not "operation aborted" ----
+{
+  const real = globalThis.fetch;
+  globalThis.fetch = (url, init = {}) => new Promise((resolve, reject) => {
+    if (init.signal) {
+      init.signal.addEventListener('abort', () => {
+        const error = new Error('This operation was aborted');
+        error.name = 'AbortError';
+        reject(error);
+      });
+    }
+  });
+  await assert.rejects(
+    () => chatCompletion('http://slow.local/v1', 'model', 'key', 'prompt', { timeoutMs: 1200 }),
+    /超过 1 秒没有返回/,
+    'timeout message explains itself',
+  );
+  globalThis.fetch = real;
+}
+
 // ---- IQ rubric ----
 const GOOD_PAGE = `<!doctype html><html><body><svg viewBox="0 0 400 300">
 <g id="frame"><path d="M60 240 L160 150"/><path d="M160 150 L260 240"/><path d="M160 150 L120 110"/>
@@ -405,6 +444,45 @@ assert.deepEqual(loadSettings(path.join(tmp, 'no-settings')), {}, 'missing setti
   assert.equal(list2.targets.length, 1);
   assert.equal(list2.summary[0].model, 'live-a');
   assert.equal(list2.summary[0].count, 1);
+
+  // ---- one pass over three models: progress while running, failures per model ----
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).endsWith('/models')) {
+      return { ok: true, status: 200, json: async () => ({ data: [] }), text: async () => '' };
+    }
+    const body = init.body ? JSON.parse(init.body) : {};
+    await new Promise((r) => setTimeout(r, 60));
+    if (body.model === 'bad-model') {
+      return { ok: false, status: 500, text: async () => 'boom', json: async () => ({}) };
+    }
+    return { ok: true, status: 200, text: async () => '', json: async () => ({ choices: [{ message: { content: PAGE } }] }) };
+  };
+  const setRes = fakeRes();
+  await routes2['/api/pelican-watch/targets'].handler(reqBody('POST', '/api/pelican-watch/targets', {
+    targets: ['live-a', 'live-b', 'bad-model'].map((model) => ({
+      provider: 'p-test', baseURL: 'http://fake.local/v1', apiKeyEnv: 'PELICAN_MULTI_KEY', model,
+    })),
+  }), setRes);
+  assert.equal(setRes.code, 200);
+
+  await routes2['/api/pelican-watch/run'].handler(reqBody('POST', '/api/pelican-watch/run', {}), fakeRes());
+  await new Promise((r) => setTimeout(r, 20));
+  const midRes = fakeRes();
+  await routes2['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), midRes);
+  const mid = JSON.parse(midRes.body);
+  assert.equal(mid.running, true, 'the pass is observable while it runs');
+  assert.equal(mid.total, 3);
+  assert.ok(mid.inflight.length >= 1 && mid.done < 3, `progress is reported (inflight ${mid.inflight.length}, done ${mid.done})`);
+
+  await new Promise((r) => setTimeout(r, 500));
+  const endRes = fakeRes();
+  await routes2['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), endRes);
+  const end = JSON.parse(endRes.body);
+  assert.equal(end.running, false, 'the pass finished');
+  assert.ok(String(end.errors['bad-model']).includes('HTTP 500'), 'the failure is recorded against that model');
+  assert.ok(!end.errors['live-b'], 'a failing model does not spoil the others');
+  assert.equal(end.images.filter((img) => img.model === 'live-b').length, 1, 'live-b drew while bad-model failed');
+  assert.equal(end.images.filter((img) => img.model === 'bad-model').length, 0, 'a failed request saves no drawing');
   } finally {
     // these effects own a 30-minute timer: dispose them or the test never exits
     for (const d of effectDisposes.slice(disposerMark)) { try { d(); } catch { /* ignore */ } }
