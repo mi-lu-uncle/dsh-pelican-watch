@@ -6,7 +6,7 @@ A DeepSeek Harness **community plugin** that runs a long-term
 **model-quality probe** (降智监测) on a schedule, across **any number of
 models**:
 
-- **Pick your models** — the panel's model picker lists every model the
+- **Pick your models** — **Settings → Pelican Watch** lists every model the
   configured providers report (live `/models` discovery, merged with the models
   in your DSH profile) and probes a multi-selected set, each model through its
   own provider and API key.
@@ -16,14 +16,17 @@ models**:
 - **No skills, no tools** — each run is a bare `chat/completions` request with
   no tool definitions and no agent loop, so the result measures the model
   alone, never your local skills.
-- **Per-model IQ leaderboard** — a ranking table of every probed model: 0-100
-  structural score of its newest drawing, the trend against its own history (with
-  a sparkline), run count, average duration and failure count. Collapsible.
-- **Latest-drawing hero** — the newest drawing is shown large with its score
-  overlaid, with the latest few stacked beside it; a compact model rail on the
-  left filters the hero, the leaderboard and the gallery at once.
-- **Gallery** — every saved drawing with an inline preview; click a card for a
-  sandboxed full-page viewer with model / time / duration / score.
+- **Everything flat, nothing to click** — the main board is read-only: one band
+  per model, its whole metric block on the left (newest score and trend, a
+  sparkline, runs / average duration / best & worst / failed attempts, and the
+  failure reason) and every drawing it ever made on the right, all laid out at
+  once — nothing collapsed, filtered, or hidden behind a click.
+- **Run state in the header** — while probing: “n/m done”, which models are in
+  flight, how long the slowest has waited (m:ss) and the timeout cap (m:ss), so a
+  slow model and a stuck one are told apart at a glance.
+- **Actions live in Settings** — picking models, probing right now and opening one
+  drawing's original page all sit under Settings → Pelican Watch; the main board
+  stays pure viewing.
 - **Bounded history** — keeps the newest N drawings (12 by default), pruning
   older ones automatically. Same prompt, same model, over days: degradation
   shows up as worse structure, refusals (saved and badged 「未检出 SVG」), or
@@ -48,7 +51,7 @@ Note: `link:`-installed plugins are not watched by HMR, so editing
 
 ## Choosing models
 
-「选择模型」 opens the picker: every provider found in your DSH profiles, with
+「选择模型」 (under Settings → Pelican Watch) opens the picker: every provider found in your DSH profiles, with
 the models it serves (its own `/models` endpoint, merged with whatever the
 profile already lists). Tick any number of models and **Save** — from the next
 cycle on each selected model draws its own picture and gets its own row on the
@@ -163,7 +166,7 @@ Deleting files there is safe; the panel always lists what is on disk.
 | File | Role |
 |---|---|
 | `lib/index.js` | Host half: multi-model scheduler, storage, scoring, `/api/pelican-watch/*` routes |
-| `lib/client.js` | Client half: model rail + latest-drawing hero + IQ leaderboard + gallery (React) |
+| `lib/client.js` | Client half: the read-only flat board (one band per model with all its drawings); actions sit on the Settings side (React) |
 | `cordis.patch.yml` | Bundle patch that mounts the package as one host row |
 | `package.json` | npm metadata + `dsh.bundle`/`dsh.client`/`dsh.compatibility` |
 | `test/pelican.test.mjs` | Offline test: rubric, per-model roll-up, provider parsing, target selection, route wiring |
