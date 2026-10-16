@@ -14,6 +14,12 @@ import {
   listGallery,
   prune,
   readKeyFromCredentials,
+  scoreDrawing,
+  summarizeRuns,
+  parseProviderRows,
+  normalizeTargets,
+  loadSettings,
+  saveSettings,
   PROMPT,
 } from '../lib/index.js';
 
@@ -236,6 +242,174 @@ try {
 // the prompt is the fixed benchmark text and never mentions tools/skills
 assert.ok(PROMPT.includes('鹈鹕') && PROMPT.includes('自行车'));
 assert.ok(!/skill|工具|agent/i.test(PROMPT), 'prompt stays a pure drawing task');
+
+// ---- IQ rubric ----
+const GOOD_PAGE = `<!doctype html><html><body><svg viewBox="0 0 400 300">
+<g id="frame"><path d="M60 240 L160 150"/><path d="M160 150 L260 240"/><path d="M160 150 L120 110"/>
+<line x1="1" y1="2" x2="3" y2="4"/><line x1="5" y1="6" x2="7" y2="8"/><line x1="9" y1="10" x2="11" y2="12"/>
+<polyline points="1,1 2,2 3,3"/></g>
+<circle id="wheel-front" cx="60" cy="240" r="40"/><circle id="wheel-back" cx="300" cy="240" r="40"/>
+<rect id="handlebar" x="100" y="90" width="40" height="6"/>
+<ellipse id="saddle" cx="150" cy="120" rx="18" ry="6"/>
+<circle id="pedal-crank" cx="170" cy="200" r="8"/>
+<path id="pelican-body" d="M200 140 q20 -30 40 0"/><path id="pelican-wing" d="M210 150 q15 10 30 0"/>
+<path id="beak" d="M240 145 l30 6 l-30 6z"/></svg></body></html>`;
+assert.equal(scoreDrawing(GOOD_PAGE).score, 100, 'a complete drawing hits every rubric line');
+assert.ok(scoreDrawing(GOOD_PAGE).features.includes('wheels'));
+assert.equal(scoreDrawing('很抱歉，我不能画这个。').score, 0, 'a refusal scores zero');
+assert.ok(scoreDrawing('这里只有文字，没有图。').features.length === 0);
+assert.equal(scoreDrawing('').score, 0, 'empty answer scores zero');
+
+// ---- per-model roll-up (the IQ board) ----
+const summary = summarizeRuns([
+  { model: 'alpha', provider: 'p', score: 90, ms: 1000, ok: true, time: '2026-01-03T00:00:00Z' },
+  { model: 'alpha', provider: 'p', score: 80, ms: 2000, ok: true, time: '2026-01-02T00:00:00Z' },
+  { model: 'alpha', provider: 'p', score: 70, ms: 3000, ok: false, time: '2026-01-01T00:00:00Z' },
+  { model: 'beta', provider: 'q', score: 40, ms: 500, ok: true, time: '2026-01-01T00:00:00Z' },
+]);
+assert.deepEqual(summary.map((r) => r.model), ['alpha', 'beta'], 'best latest score first');
+assert.deepEqual(
+  { count: summary[0].count, latest: summary[0].latest, avg: summary[0].avg, best: summary[0].best, worst: summary[0].worst },
+  { count: 3, latest: 90, avg: 80, best: 90, worst: 70 },
+);
+assert.equal(summary[0].trend, 15, 'trend = latest vs the average of the older runs');
+assert.equal(summary[0].avgMs, 2000);
+assert.equal(summary[0].refusals, 1);
+assert.equal(summary[1].trend, 0, 'a single run has no trend');
+assert.deepEqual(summarizeRuns([]), []);
+
+// ---- provider discovery out of a profile patch layer ----
+const PATCH = `- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      taotoken:
+        displayName: taotoken
+        apiKeyEnv: TAOTOKEN_API_KEY
+        api: openai-completions
+        baseURL: https://taotoken.net/api/v1
+        models:
+          - id: deepseek-flash
+            name: deepseek-flash
+          - id: glm-5.3-flash
+            name: GLM-5.3-Flash
+      other:
+        baseURL: "https://other.example/v1"  # comment
+        apiKeyEnv: OTHER_KEY
+        models:
+          - name: only-names
+- id: ui-chat
+  config:
+    transcriptView: standard
+`;
+const parsed = parseProviderRows(PATCH);
+assert.deepEqual(parsed.map((p) => p.provider), ['taotoken', 'other']);
+assert.equal(parsed[0].baseURL, 'https://taotoken.net/api/v1');
+assert.equal(parsed[0].apiKeyEnv, 'TAOTOKEN_API_KEY');
+assert.deepEqual(parsed[0].models, ['deepseek-flash', 'glm-5.3-flash']);
+assert.equal(parsed[1].baseURL, 'https://other.example/v1', 'quotes and comment stripped');
+assert.deepEqual(parsed[1].models, ['only-names'], 'a models list with only names still works');
+assert.deepEqual(parseProviderRows('not: [valid yaml'), [], 'unknown shapes discover nothing');
+
+// ---- target list validation ----
+assert.equal(normalizeTargets([{ model: 'x' }, { model: 'x' }], []).length, 1, 'de-duplicated');
+assert.equal(normalizeTargets(Array.from({ length: 20 }, (_, i) => ({ model: `m${i}` })), []).length, 12, 'capped');
+assert.deepEqual(normalizeTargets([{}, null, { model: '' }, { model: 7 }], [{ model: 'fallback' }]), [{ model: 'fallback' }]);
+const roundTrip = path.join(tmp, 'settings');
+saveSettings(roundTrip, { targets: [{ provider: 'p', baseURL: 'u', apiKeyEnv: 'K', model: 'm' }] });
+assert.equal(loadSettings(roundTrip).targets[0].model, 'm');
+assert.deepEqual(loadSettings(path.join(tmp, 'no-settings')), {}, 'missing settings file');
+
+// ---- multi-target: catalog discovery, selection persistence, per-model run ----
+{
+  const disposerMark = effectDisposes.length;
+  try {
+  const routes2 = {};
+  const dir2 = path.join(tmp, 'multi');
+  const ctx2 = {
+    effect: (fn) => { const d = fn(); if (typeof d === 'function') effectDisposes.push(d); return d; },
+    webServer: { register: (r) => { routes2[r.path] = r; return () => {}; } },
+  };
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).endsWith('/models')) {
+      return { ok: true, status: 200, json: async () => ({ data: [{ id: 'live-a' }, { id: 'live-b' }] }), text: async () => '' };
+    }
+    return { ok: true, status: 200, text: async () => '', json: async () => ({ choices: [{ message: { content: PAGE } }] }) };
+  };
+  const reqBody = (method, url, payload) => ({
+    method,
+    url,
+    headers: { 'sec-fetch-site': 'same-origin' },
+    async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(payload)); },
+  });
+  const fakeRes = () => {
+    const r = { code: 0, headers: {}, body: '' };
+    r.writeHead = (code, headers) => { r.code = code; Object.assign(r.headers, headers); };
+    r.end = (body) => { r.body = body; };
+    return r;
+  };
+  const req = (method, url) => ({ method, url, headers: { 'sec-fetch-site': 'same-origin' }, async *[Symbol.asyncIterator]() {} });
+  apply(ctx2, {
+    dir: dir2,
+    provider: 'p-test',
+    baseURL: 'http://fake.local/v1',
+    apiKeyEnv: 'PELICAN_MULTI_KEY',
+    apiKey: 'sk-multi',
+    model: 'seed-model',
+    runOnStart: false,
+    credentialsFile: path.join(tmp, 'none.yaml'),
+  });
+
+  // the picker's catalog: live /models discovery merged with the seed model
+  const catRes = fakeRes();
+  await routes2['/api/pelican-watch/catalog'].handler(req('GET', '/api/pelican-watch/catalog?refresh=1'), catRes);
+  const catalog = JSON.parse(catRes.body);
+  const row = catalog.providers.find((p) => p.provider === 'p-test');
+  assert.ok(row, 'the configured provider appears in the picker');
+  for (const id of ['seed-model', 'live-a', 'live-b']) {
+    assert.ok(row.models.includes(id), `discovered model ${id}`);
+  }
+  assert.equal(row.keyAvailable, true);
+
+  // saving a selection persists it and never echoes key material
+  const saveRes = fakeRes();
+  await routes2['/api/pelican-watch/targets'].handler(
+    reqBody('POST', '/api/pelican-watch/targets', {
+      targets: [{ provider: 'p-test', baseURL: 'http://fake.local/v1', apiKeyEnv: 'PELICAN_MULTI_KEY', model: 'live-a', apiKey: 'sk-secret' }],
+    }),
+    saveRes,
+  );
+  assert.equal(saveRes.code, 200);
+  assert.ok(!saveRes.body.includes('sk-secret'), 'keys never travel to the browser');
+  assert.equal(loadSettings(dir2).targets[0].model, 'live-a', 'selection persisted to disk');
+
+  // an empty selection is refused
+  const emptyRes = fakeRes();
+  await routes2['/api/pelican-watch/targets'].handler(reqBody('POST', '/api/pelican-watch/targets', { targets: [] }), emptyRes);
+  assert.equal(emptyRes.code, 400, 'cannot save an empty selection');
+
+  // running one model runs only that model, and it lands in that model's row
+  const runRes2 = fakeRes();
+  await routes2['/api/pelican-watch/run'].handler(
+    reqBody('POST', '/api/pelican-watch/run', { model: 'live-a', provider: 'p-test' }),
+    runRes2,
+  );
+  await new Promise((r) => setTimeout(r, 120));
+  const listRes2 = fakeRes();
+  await routes2['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), listRes2);
+  const list2 = JSON.parse(listRes2.body);
+  assert.equal(list2.images.length, 1, 'only the requested model ran');
+  assert.equal(list2.images[0].model, 'live-a');
+  assert.equal(typeof list2.images[0].score, 'number');
+  assert.equal(Array.isArray(list2.images[0].features), true);
+  assert.equal(list2.targets.length, 1);
+  assert.equal(list2.summary[0].model, 'live-a');
+  assert.equal(list2.summary[0].count, 1);
+  } finally {
+    // these effects own a 30-minute timer: dispose them or the test never exits
+    for (const d of effectDisposes.slice(disposerMark)) { try { d(); } catch { /* ignore */ } }
+  }
+}
 
 // ---- client entry contract: BOTH apply and inject must be exported ----
 // A bare `return { apply }` makes the entry fail to activate and aborts the

@@ -2,11 +2,13 @@
 
 [English](README.md) | 简体中文 | [日本語](README.ja.md)
 
-一个 DeepSeek Harness（DSH）**社区插件**：按固定间隔对同一个模型运行**长期降智探针**。
+一个 DeepSeek Harness（DSH）**社区插件**：按固定间隔对**任意多个模型**运行**长期降智探针**。
 
-- **定时作画** — 每 30 分钟（可配置）向**一个指定模型**发一次请求，让它画一幅「鹈鹕骑自行车」的单文件 HTML 页面（内联 SVG）。
+- **自己挑模型** — 面板里的「选择模型」会列出各 provider 提供的全部模型（实时调 `/models` 发现，并合并你 DSH profile 里已配置的模型），可多选；每个模型走自己的 provider 与 API Key。
+- **定时作画** — 每 30 分钟（可配置）让每个已选模型画一幅「鹈鹕骑自行车」的单文件 HTML 页面（内联 SVG）。
 - **不用技能、不用工具** — 每次都是裸的 `chat/completions` 请求：不带工具定义、不走 agent 循环，测的只是模型本身，和你的本地技能无关。
-- **画册面板** — 主侧边栏（和 Settings）里的「鹈鹕监视」列出每张保存的画，带内联 SVG 预览；点卡片打开沙箱化全页查看器，附模型 / 时间 / 耗时。还有「立即画一张」按钮。
+- **每个模型一张智商看板** — 最新一张画的 0–100 结构评分、相对自己历史的高低趋势、跑了几次、平均耗时、有几次没画出图。
+- **画册** — 每张保存的画都有内联预览；点卡片打开沙箱化全页查看器，附模型 / 时间 / 耗时 / 得分。
 - **有界历史** — 默认保留最新 12 张，旧的自动清理。同一道题、同一个模型、坚持几天，退化会直接体现在结构变差、拒画（会保存并标上「未检出 SVG」）、或耗时变长上。
 
 ## 安装
@@ -25,6 +27,12 @@ dsh plugin --profile desktop add /absolute/path/to/dsh-pelican-watch
 
 注意：以 `link:` 方式安装的插件不走 HMR 监听，修改 `lib/index.js` 或 `lib/client.js` 后需要重启 App 才能生效。
 
+## 选择模型
+
+面板上的「选择模型」会打开选择器：列出你 DSH profile 里发现的每个 provider，以及它提供的模型（调该 provider 自己的 `/models`，并与 profile 里已有的清单合并）。勾选任意多个后点**保存**——从下一个周期起，每个选中的模型各画一张，并在智商看板上各占一行。
+
+这份选择存在 `dir/settings.json`，调度器以它为准；`config.model` / `config.targets` 只用于第一次运行的初始值。每轮最多探测 12 个模型，逐个串行、每个一张。
+
 ## 配置
 
 默认值贴合常见配置；如需覆盖，在 profile 补丁（`cordis.patch.yml`）的 `pelican-watch` 行上设置：
@@ -32,14 +40,16 @@ dsh plugin --profile desktop add /absolute/path/to/dsh-pelican-watch
 ```yaml
 - id: pelican-watch
   config:
-    model: glm-5.3-flash                 # 探测哪个模型
+    model: glm-5.3-flash                 # 初始模型（面板里的选择优先）
     baseURL: https://taotoken.net/api/v1 # OpenAI 兼容端点
     apiKeyEnv: TAOTOKEN_API_KEY          # 存放 API Key 的环境变量…
     # apiKey: sk-…                       # …或者直接把 key 写在这里
+    # targets:                           # 可选：一次给多个模型做初始值
+    #   - { provider: taotoken, baseURL: https://taotoken.net/api/v1, apiKeyEnv: TAOTOKEN_API_KEY, model: glm-5.3-flash }
     intervalMinutes: 30                  # 作画间隔
-    maxImages: 12                        # 历史深度（30 分钟一张 ≈ 6 小时）
+    maxImages: 12                        # 每个模型的历史深度（30 分钟一张 ≈ 6 小时）
     dir: ~/.dsh/pelican-watch            # 保存目录
-    runOnStart: true                     # 启动后 ~8 秒先画一张
+    runOnStart: true                     # 启动后 ~8 秒先画一轮
     # temperature: 0.7                   # 可选；默认不带该参数
     # prompt: …                          # 万不得已才改基准题面
 ```
@@ -58,14 +68,21 @@ Key 在调用时按以下顺序解析：
 
 三者都没有时跳过本次作画，并在面板显示原因（`缺少 API Key：…`）；补上任意一种，下一次定时作画即正常进行。
 
+## 智商分
+
+每张画都会被离线打个 0–100 的结构分，评分项就是提示词里真正要求的东西：有没有 SVG（30）、两个车轮（10）、辐条一类线条（8）、车架（8）、车把（6）、车座（6）、脚踏（6）、鹈鹕与喙/喉囊（10）、翅膀（6）、页面是否完整闭合（6）、输出体量是否合理（4）。看板上显示每个模型最新得分、相对它自己此前成绩的趋势、跑了几次、平均耗时和失败次数。
+
+它是**启发式近似，不是权威基准**：画得丑也可能满分，这个分数只有拿同一个模型的历次结果对比才有意义。评分规则就是普通代码（`lib/index.js` 里的 `SCORE_FEATURES`），想调随时可调。
+
 ## 存储
 
 画保存在 `dir`（默认 `~/.dsh/pelican-watch`）：
 
 | 文件 | 作用 |
 |---|---|
-| `<时间>_<模型>.html` | 生成的完整页面；首行是元信息注释（模型、时间、耗时、是否检出 SVG） |
+| `<时间>_<模型>.html` | 生成的完整页面；首行是元信息注释（模型、provider、时间、耗时、是否检出 SVG） |
 | `<时间>_<模型>.svg` | 抽取出的内联 SVG，供面板 `<img>` 预览使用 |
+| `settings.json` | 已选中的探测目标（由选择器写入） |
 
 手动删除这里的文件是安全的；面板永远以磁盘上的现状为准。
 
@@ -78,11 +95,11 @@ Key 在调用时按以下顺序解析：
 
 | 文件 | 作用 |
 |---|---|
-| `lib/index.js` | Host 半：调度器、存储、`/api/pelican-watch/*` 路由 |
-| `lib/client.js` | Client 半：画册面板（React） |
+| `lib/index.js` | Host 半：多模型调度器、存储、评分、`/api/pelican-watch/*` 路由 |
+| `lib/client.js` | Client 半：模型选择器 + 智商看板 + 画册（React） |
 | `cordis.patch.yml` | Bundle 补丁，把本包作为一个 host 行挂载 |
 | `package.json` | npm 元数据 + `dsh.bundle`/`dsh.client`/`dsh.compatibility` |
-| `test/pelican.test.mjs` | 离线测试：工具函数、存储生命周期、假 fetch 的路由接线 |
+| `test/pelican.test.mjs` | 离线测试：评分规则、按模型汇总、provider 解析、目标选择、路由接线 |
 
 ## 测试
 

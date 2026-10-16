@@ -1,7 +1,7 @@
 {
   "name": "@mi-lu-uncle/dsh-pelican-watch",
-  "version": "0.1.0",
-  "description": "DSH community plugin: schedule a model to draw an SVG 'pelican riding a bicycle' on a fixed interval and browse the gallery, as a long-running model-quality (降智) probe.",
+  "version": "0.2.0",
+  "description": "DSH community plugin: probe any set of models — each asked to draw an SVG 'pelican riding a bicycle' on a fixed interval — with a per-model IQ score, trend and gallery. A long-running model-quality (降智) probe.",
   "author": "milu",
   "repository": "https://github.com/mi-lu-uncle/dsh-pelican-watch",
   "keywords": [
@@ -10,7 +10,8 @@
     "plugin",
     "pelican",
     "benchmark",
-    "model-quality"
+    "model-quality",
+    "multi-model"
   ],
   "type": "module",
   "main": "lib/index.js",
