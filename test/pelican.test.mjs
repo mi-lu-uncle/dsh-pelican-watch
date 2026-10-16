@@ -494,6 +494,40 @@ assert.deepEqual(loadSettings(path.join(tmp, 'no-settings')), {}, 'missing setti
   }
 }
 
+// ---- runOnStart: does booting the app fire a round right away? ----
+// Default true: one round ~8s after boot (so a restart always has fresh data).
+// runOnStart:false is the opt-out a user picks when they do not want the panel
+// to say "probing" the moment they open it: the first round then waits for the
+// interval. Both arms are asserted through the real /list payload.
+{
+  const offsets = [];
+  for (const runOnStart of [true, false]) {
+    const localRoutes = {};
+    const localDisposes = [];
+    apply({
+      effect: (fn) => { const d = fn(); if (typeof d === 'function') localDisposes.push(d); return d; },
+      webServer: { register: (r) => { localRoutes[r.path] = r; return () => delete localRoutes[r.path]; } },
+    }, {
+      dir: path.join(tmp, 'boot-round'),
+      model: 'probe-model',
+      apiKey: 'sk-test',
+      baseURL: 'http://fake.local/v1',
+      intervalMinutes: 30,
+      runOnStart,
+    });
+    const res = { code: 0, headers: {}, body: '', writeHead(c, h) { this.code = c; Object.assign(this.headers, h); }, end(b) { this.body = b; } };
+    await localRoutes['/api/pelican-watch/list'].handler(
+      { method: 'GET', url: '/api/pelican-watch/list', headers: { 'sec-fetch-site': 'same-origin' }, async *[Symbol.asyncIterator]() {} },
+      res,
+    );
+    offsets.push(JSON.parse(res.body).nextRunAt - Date.now());
+    // these owns a 30-minute timer: drop it or the test never exits
+    for (const d of localDisposes) { try { d(); } catch { /* ignore */ } }
+  }
+  assert.ok(offsets[0] >= 0 && offsets[0] < 60_000, `default arms the boot round soon (${offsets[0]}ms)`);
+  assert.ok(offsets[1] > 25 * 60_000, `runOnStart:false waits for the interval instead (${Math.round(offsets[1] / 60000)}min)`);
+}
+
 // ---- client entry contract: BOTH apply and inject must be exported ----
 // A bare `return { apply }` makes the entry fail to activate and aborts the
 // whole web boot ("1 entry did not activate"). Load the real client source
