@@ -1,0 +1,760 @@
+<!doctype html>
+<!--
+  原型：鹈鹕监视面板的 4 个界面方案，挂在仿真 DSH 外壳内（真实侧栏 + 主区域），
+  用 ?variant= 切换，底部浮动栏用 ←/→ 翻转。
+
+  这是**一次性原型**，不是产品代码：没有测试、没有真实网络、没有持久化。
+  数据是写死的 mock（取自真实 settings.json 与实测耗时）。
+  结论定下来后：胜出方案重写进 lib/client.js，本文件移到一次性分支 prototype/pelican-panel-ui。
+
+  方案：
+    A 控制台 Console   —— 左栏模型清单（分数/走势/状态）+ 右侧高密度画册网格
+    B 画册  Gallery    —— 无侧栏，最新作品为 hero 大图 + 模型胶片条 + 大图网格
+    C 排行榜 Leaderboard —— 以排名表为主对象 + 双栏（缩略条 / 大预览）
+    D 商业  SaaS       —— KPI 卡片 + 焦点排行榜卡（奖牌/圆环）+ 柔和卡片网格
+
+  交互：点模型=筛选；点画=灯箱；「全部检测一遍」= 模拟检测（进度/逐张出现）；
+        状态切换可看「就绪 / 检测中 / 无数据」；主题可切浅深。
+-->
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>鹈鹕监视 · 界面方案原型</title>
+<style>
+  /* ── 令牌（DSH 的 --dsw-alias-* 的近似值，仅为原型的观感服务） ───────── */
+  :root{
+    --bg-app:#0a0c11; --bg-shell:#0e1117; --bg-panel:#12151d; --bg-card:#171b25; --bg-elev:#1e2330;
+    --border-l1:rgba(255,255,255,.07); --border-l2:rgba(255,255,255,.14);
+    --label-1:#eef1f7; --label-2:#a4adbd; --label-3:#6b7382;
+    --accent:#6366f1; --accent-ink:#ffffff; --accent-soft:rgba(99,102,241,.14);
+    --ok:#22c55e; --warn:#f59e0b; --err:#ef4444;
+    --shadow-1:0 1px 2px rgba(0,0,0,.5); --shadow-2:0 18px 44px rgba(0,0,0,.5);
+    --r-sm:8px; --r-md:12px; --r-lg:16px;
+    --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue",Arial,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  [data-theme="light"]{
+    --bg-app:#eef0f5; --bg-shell:#f7f8fb; --bg-panel:#ffffff; --bg-card:#ffffff; --bg-elev:#f3f5f9;
+    --border-l1:rgba(15,23,42,.07); --border-l2:rgba(15,23,42,.14);
+    --label-1:#0f172a; --label-2:#4a5568; --label-3:#8b95a5;
+    --accent-soft:rgba(99,102,241,.10);
+    --shadow-1:0 1px 2px rgba(15,23,42,.06),0 1px 3px rgba(15,23,42,.07);
+    --shadow-2:0 16px 40px rgba(15,23,42,.14);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg-app);color:var(--label-1);font:13px/1.5 var(--font);-webkit-font-smoothing:antialiased}
+  button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+  /* ── 仿真 DSH 外壳 ─────────────────────────────────────────────────── */
+  .shell{display:flex;height:100%;overflow:hidden}
+  .rail{width:52px;flex:none;background:var(--bg-shell);border-right:1px solid var(--border-l1);display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 0}
+  .rail i{width:30px;height:30px;border-radius:9px;display:flex;align-items:center;justify-content:center;color:var(--label-3)}
+  .rail i.on{background:var(--accent-soft);color:var(--accent)}
+  .side{width:236px;flex:none;background:var(--bg-shell);border-right:1px solid var(--border-l1);display:flex;flex-direction:column;padding:12px 10px}
+  .side h2{margin:4px 6px 10px;font-size:12px;font-weight:600;color:var(--label-3);letter-spacing:.04em;text-transform:uppercase}
+  .side .item{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:8px;color:var(--label-2);font-size:13px}
+  .side .item.on{background:var(--bg-elev);color:var(--label-1);font-weight:600}
+  .side .item span.dot{width:15px;text-align:center;opacity:.85}
+  .main{flex:1;min-width:0;background:var(--bg-panel);display:flex;flex-direction:column;overflow:hidden}
+  .stage{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column}
+
+  /* ── 通用零件（各方案共用的小积木，布局各自独立） ───────────────────── */
+  .btn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 11px;border-radius:var(--r-sm);
+       border:1px solid var(--border-l2);background:transparent;color:var(--label-1);font-size:12.5px;white-space:nowrap}
+  .btn:hover{background:var(--bg-elev)}
+  .btn.primary{background:var(--accent);border-color:transparent;color:var(--accent-ink)}
+  .btn.primary:hover{filter:brightness(1.08)}
+  .btn.ghost{border-color:transparent;color:var(--label-2)}
+  .btn.ghost:hover{background:var(--bg-elev);color:var(--label-1)}
+  .btn[disabled]{opacity:.45;cursor:not-allowed}
+  .pill{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap}
+  .pill.ok{background:color-mix(in srgb,var(--ok) 15%,transparent);color:var(--ok)}
+  .pill.warn{background:color-mix(in srgb,var(--warn) 15%,transparent);color:var(--warn)}
+  .pill.err{background:color-mix(in srgb,var(--err) 15%,transparent);color:var(--err)}
+  .pill.acc{background:var(--accent-soft);color:var(--accent)}
+  .pill.mute{background:var(--bg-elev);color:var(--label-3)}
+  .art{width:100%;height:100%;display:block}
+  .art svg{width:100%;height:100%;display:block}
+
+  /* ── 方案 A：控制台 ────────────────────────────────────────────────── */
+  .vA{display:flex;height:100%;min-height:0}
+  .vA .col{width:250px;flex:none;border-right:1px solid var(--border-l1);display:flex;flex-direction:column;min-height:0}
+  .vA .colHead{padding:14px 14px 8px;display:flex;align-items:baseline;justify-content:space-between}
+  .vA .colHead b{font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--label-3)}
+  .vA .models{flex:1;min-height:0;overflow:auto;padding:0 8px 8px}
+  .vA .mrow{display:grid;grid-template-columns:8px 1fr auto;gap:8px;align-items:center;width:100%;padding:9px 8px;border-radius:var(--r-sm);text-align:left;border:1px solid transparent}
+  .vA .mrow:hover{background:var(--bg-elev)}
+  .vA .mrow.on{background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+  .vA .dot{width:7px;height:7px;border-radius:999px;background:var(--label-3)}
+  .vA .dot.ok{background:var(--ok)} .vA .dot.err{background:var(--err)} .vA .dot.run{background:var(--accent);animation:pulse 1.1s infinite}
+  @keyframes pulse{50%{opacity:.25}}
+  .vA .mname{font:600 12.5px/1.35 var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .vA .msub{color:var(--label-3);font-size:11px;margin-top:2px}
+  .vA .mscore{font:700 19px/1 var(--mono);font-variant-numeric:tabular-nums}
+  .vA .colFoot{padding:8px;border-top:1px solid var(--border-l1)}
+  .vA .work{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}
+  .vA .bar{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border-l1);flex-wrap:wrap}
+  .vA h1{margin:0;font-size:15px;font-weight:700}
+  .vA .seg{display:flex;border:1px solid var(--border-l2);border-radius:8px;overflow:hidden}
+  .vA .seg button{height:26px;padding:0 10px;font-size:12px;color:var(--label-2)}
+  .vA .seg button.on{background:var(--bg-elev);color:var(--label-1);font-weight:600}
+  .vA .grid{flex:1;min-height:0;overflow:auto;padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(212px,1fr));gap:10px;align-content:start}
+  .vA .card{border:1px solid var(--border-l1);border-radius:10px;background:var(--bg-card);overflow:hidden;text-align:left;display:flex;flex-direction:column}
+  .vA .card:hover{border-color:var(--border-l2)}
+  .vA .card .thumb{position:relative;aspect-ratio:4/3;background:var(--bg-elev)}
+  .vA .card .sc{position:absolute;top:7px;right:7px}
+  .vA .card .cap{padding:7px 9px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .vA .card .m{font:600 11.5px/1.3 var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .vA .card .t{color:var(--label-3);font-size:11px;flex:none}
+  .vA .prog{height:2px;background:var(--bg-elev);overflow:hidden}
+  .vA .prog i{display:block;height:100%;background:var(--accent)}
+
+  /* ── 方案 B：画册 ──────────────────────────────────────────────────── */
+  .vB{height:100%;overflow:auto;padding:26px 30px 40px;max-width:1240px;margin:0 auto;width:100%}
+  .vB .top{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:22px}
+  .vB h1{margin:0;font-size:26px;font-weight:700;letter-spacing:-.02em}
+  .vB .sub{color:var(--label-3);font-size:12.5px;margin-top:6px}
+  .vB .hero{display:grid;grid-template-columns:minmax(0,1.85fr) minmax(220px,1fr);gap:22px;align-items:stretch;margin-bottom:26px}
+  .vB .heroArt{border:1px solid var(--border-l1);border-radius:var(--r-lg);overflow:hidden;background:var(--bg-card);aspect-ratio:4/3;position:relative}
+  .vB .heroArt .cap{position:absolute;left:0;right:0;bottom:0;padding:16px 18px;background:linear-gradient(transparent,rgba(0,0,0,.72));color:#fff;display:flex;align-items:flex-end;justify-content:space-between;gap:14px}
+  [data-theme="light"] .vB .heroArt .cap{background:linear-gradient(transparent,rgba(255,255,255,.92));color:var(--label-1)}
+  .vB .heroArt .cap .m{font:600 15px/1.3 var(--mono)}
+  .vB .heroArt .cap .meta{font-size:11.5px;opacity:.8;margin-top:4px}
+  .vB .bigscore{font:700 40px/1 var(--mono);letter-spacing:-.02em}
+  .vB .bigscore small{font-size:12px;font-weight:600;opacity:.6;margin-left:3px}
+  .vB .stack{display:flex;flex-direction:column;gap:12px;min-height:0}
+  .vB .stackH{font-size:11.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--label-3)}
+  .vB .mini{display:grid;grid-template-columns:84px 1fr;gap:11px;align-items:center;border:1px solid var(--border-l1);border-radius:var(--r-md);padding:7px;background:var(--bg-card);text-align:left}
+  .vB .mini:hover{border-color:var(--border-l2)}
+  .vB .mini .a{aspect-ratio:4/3;border-radius:7px;overflow:hidden;background:var(--bg-elev)}
+  .vB .film{display:flex;gap:10px;overflow:auto;padding:2px 2px 12px;margin-bottom:8px}
+  .vB .reel{display:flex;align-items:center;gap:10px;border:1px solid var(--border-l1);border-radius:999px;padding:5px 14px 5px 6px;background:var(--bg-card);white-space:nowrap}
+  .vB .reel.on{border-color:var(--accent);background:var(--accent-soft)}
+  .vB .reel .ring{width:34px;height:34px;flex:none;position:relative;display:grid;place-items:center;font:700 11px/1 var(--mono)}
+  .vB .reel b{font:600 12.5px/1 var(--mono)}
+  .vB .wall{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px}
+  .vB .shot{text-align:left;border-radius:var(--r-lg);overflow:hidden;border:1px solid var(--border-l1);background:var(--bg-card)}
+  .vB .shot:hover{box-shadow:var(--shadow-2);border-color:var(--border-l2)}
+  .vB .shot .a{aspect-ratio:4/3;background:var(--bg-elev)}
+  .vB .shot .cap{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 14px}
+
+  /* ── 方案 C：排行榜 / 终端 ──────────────────────────────────────────── */
+  .vC{height:100%;display:flex;flex-direction:column;min-height:0;font-family:var(--mono)}
+  .vC .top{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px 14px;border-bottom:1px solid var(--border-l1);font-size:12px}
+  .vC .lbl{color:var(--label-3);letter-spacing:.08em;text-transform:uppercase;font-size:10.5px}
+  .vC .tableWrap{flex:1;min-height:0;overflow:auto}
+  .vC table{width:100%;border-collapse:collapse;font-size:12px}
+  .vC th{position:sticky;top:0;background:var(--bg-panel);color:var(--label-3);font-size:10.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;text-align:right;padding:8px 10px;border-bottom:1px solid var(--border-l2);white-space:nowrap;z-index:1}
+  .vC th:first-child,.vC th:nth-child(2){text-align:left}
+  .vC td{padding:7px 10px;border-bottom:1px solid var(--border-l1);text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .vC td:first-child,.vC td:nth-child(2){text-align:left}
+  .vC tbody tr{cursor:pointer}
+  .vC tbody tr:hover{background:var(--bg-elev)}
+  .vC tbody tr.on{background:var(--accent-soft)}
+  .vC .rank{color:var(--label-3);width:26px}
+  .vC tr.lead td{background:linear-gradient(90deg,color-mix(in srgb,var(--warn) 14%,transparent),transparent)}
+  .vC .nm{font-weight:600}
+  .vC .up{color:var(--ok)} .vC .down{color:var(--err)} .vC .flat{color:var(--label-3)}
+  .vC .bottom{height:38%;min-height:210px;border-top:1px solid var(--border-l2);display:flex;min-height:0}
+  .vC .strip{width:44%;flex:none;border-right:1px solid var(--border-l1);overflow:auto;padding:10px;display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:8px;align-content:start}
+  .vC .tl{border:1px solid var(--border-l1);border-radius:6px;overflow:hidden;background:var(--bg-card);position:relative;aspect-ratio:4/3}
+  .vC .tl.on{border-color:var(--accent)}
+  .vC .tl .sc{position:absolute;left:4px;bottom:4px}
+  .vC .view{flex:1;min-width:0;display:flex;flex-direction:column;padding:10px 12px}
+  .vC .view .a{flex:1;min-height:0;border:1px solid var(--border-l1);border-radius:8px;overflow:hidden;background:var(--bg-card)}
+  .vC .kv{display:flex;gap:16px;flex-wrap:wrap;padding:9px 2px 2px;font-size:11.5px;color:var(--label-2)}
+
+  /* ── 方案 D：商业 SaaS ─────────────────────────────────────────────── */
+  .vD{height:100%;overflow:auto;background:
+        radial-gradient(1100px 380px at 12% -12%,color-mix(in srgb,var(--accent) 13%,transparent),transparent 62%),
+        var(--bg-panel)}
+  .vD .wrap{max-width:1180px;margin:0 auto;padding:24px 26px 40px}
+  .vD .head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:20px}
+  .vD h1{margin:0;font-size:22px;font-weight:700;letter-spacing:-.015em}
+  .vD .sub{color:var(--label-3);font-size:12.5px;margin-top:5px}
+  .vD .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:18px}
+  .vD .kpi{background:var(--bg-card);border:1px solid var(--border-l1);border-radius:var(--r-lg);padding:14px 16px;box-shadow:var(--shadow-1)}
+  .vD .kpi .k{color:var(--label-3);font-size:11.5px;font-weight:600;letter-spacing:.02em}
+  .vD .kpi .v{font:700 26px/1.15 var(--mono);margin-top:7px;letter-spacing:-.02em}
+  .vD .kpi .d{color:var(--label-3);font-size:11.5px;margin-top:4px}
+  .vD .board{background:var(--bg-card);border:1px solid var(--border-l1);border-radius:var(--r-lg);box-shadow:var(--shadow-2);overflow:hidden;margin-bottom:22px}
+  .vD .boardH{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 18px;border-bottom:1px solid var(--border-l1)}
+  .vD .boardH b{font-size:13.5px}
+  .vD .spot{display:grid;grid-template-columns:auto 1fr auto;gap:20px;align-items:center;padding:18px;border-bottom:1px solid var(--border-l1);background:linear-gradient(90deg,var(--accent-soft),transparent 68%)}
+  .vD .donut{width:104px;height:104px;position:relative;display:grid;place-items:center;flex:none}
+  .vD .donut .num{position:absolute;inset:0;display:grid;place-items:center;font:700 27px/1 var(--mono);letter-spacing:-.02em}
+  .vD .donut .num small{display:block;font-size:10px;font-weight:600;color:var(--label-3);text-align:center;margin-top:2px;letter-spacing:.06em}
+  .vD .spotName{font:700 18px/1.3 var(--mono);letter-spacing:-.01em;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .vD .spotMeta{color:var(--label-3);font-size:12px;margin-top:6px}
+  .vD .statGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:12px;margin-top:14px}
+  .vD .stat .k{color:var(--label-3);font-size:11px}
+  .vD .stat .v{font:600 14px/1.4 var(--mono);margin-top:2px}
+  .vD .row{display:grid;grid-template-columns:34px 1fr auto auto auto;gap:14px;align-items:center;padding:11px 18px;border-bottom:1px solid var(--border-l1);width:100%;text-align:left}
+  .vD .row:last-child{border-bottom:0}
+  .vD .row:hover{background:var(--bg-elev)}
+  .vD .row.on{background:var(--accent-soft)}
+  .vD .medal{width:26px;height:26px;border-radius:999px;display:grid;place-items:center;font-size:12px;font-weight:700;background:var(--bg-elev);color:var(--label-2)}
+  .vD .medal.g1{background:linear-gradient(140deg,#fbbf24,#f59e0b);color:#3b2600}
+  .vD .medal.g2{background:linear-gradient(140deg,#e5e7eb,#9ca3af);color:#1f2937}
+  .vD .medal.g3{background:linear-gradient(140deg,#fcd34d,#b45309);color:#2b1600}
+  .vD .rowName{font:600 13px/1.35 var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .vD .rowSub{color:var(--label-3);font-size:11.5px;margin-top:3px}
+  .vD .rowScore{font:700 17px/1 var(--mono)}
+  .vD .sec{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:0 0 14px;flex-wrap:wrap}
+  .vD .chips{display:flex;gap:7px;flex-wrap:wrap}
+  .vD .chip{height:28px;padding:0 12px;border-radius:999px;border:1px solid var(--border-l1);background:var(--bg-card);color:var(--label-2);font-size:12px}
+  .vD .chip.on{border-color:var(--accent);background:var(--accent-soft);color:var(--label-1);font-weight:600}
+  .vD .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(248px,1fr));gap:16px}
+  .vD .gcard{background:var(--bg-card);border:1px solid var(--border-l1);border-radius:var(--r-lg);overflow:hidden;box-shadow:var(--shadow-1);text-align:left;transition:transform .14s ease,box-shadow .14s ease,border-color .14s ease}
+  .vD .gcard:hover{transform:translateY(-2px);box-shadow:var(--shadow-2);border-color:var(--border-l2)}
+  .vD .gcard .a{aspect-ratio:4/3;background:var(--bg-elev);border-bottom:1px solid var(--border-l1)}
+  .vD .gcard .cap{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 13px}
+  .vD .banner{display:flex;align-items:center;gap:12px;padding:10px 14px;border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);background:var(--accent-soft);border-radius:var(--r-md);margin-bottom:16px;font-size:12.5px}
+  .vD .banner .bar{flex:1;height:4px;border-radius:999px;background:color-mix(in srgb,var(--accent) 25%,transparent);overflow:hidden}
+  .vD .banner .bar i{display:block;height:100%;background:var(--accent);transition:width .4s ease}
+
+  /* ── 空态 / 骨架 ──────────────────────────────────────────────────── */
+  .empty{flex:1;display:grid;place-items:center;text-align:center;color:var(--label-3);padding:40px}
+  .empty .g{font-size:34px;margin-bottom:10px}
+  .empty b{display:block;color:var(--label-2);font-size:14px;margin-bottom:6px}
+  .skel{background:linear-gradient(90deg,var(--bg-elev) 25%,color-mix(in srgb,var(--bg-elev) 55%,var(--bg-card)) 37%,var(--bg-elev) 63%);background-size:400% 100%;animation:sh 1.3s ease-in-out infinite}
+  @keyframes sh{0%{background-position:100% 0}100%{background-position:0 0}}
+
+  /* ── 浮动切换栏（刻意不同于页面本身） ────────────────────────────── */
+  .switcher{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:9999;display:flex;align-items:center;gap:10px;
+    background:#0b0e14;color:#fff;border:1px solid rgba(255,255,255,.16);border-radius:999px;padding:7px 10px 7px 8px;
+    box-shadow:0 18px 44px rgba(0,0,0,.5);font:12px/1 var(--font)}
+  .switcher .arrow{width:28px;height:28px;border-radius:999px;display:grid;place-items:center;background:rgba(255,255,255,.1);color:#fff;font-size:14px}
+  .switcher .arrow:hover{background:rgba(255,255,255,.2)}
+  .switcher .label{min-width:186px;text-align:center;white-space:nowrap}
+  .switcher .label b{font-weight:700}
+  .switcher .label span{color:rgba(255,255,255,.6);margin-left:6px}
+  .switcher .sep{width:1px;height:22px;background:rgba(255,255,255,.16)}
+  .switcher .grp{display:flex;gap:4px;align-items:center}
+  .switcher .grp .t{color:rgba(255,255,255,.5);font-size:11px;margin-right:2px}
+  .switcher .opt{height:24px;padding:0 9px;border-radius:999px;color:rgba(255,255,255,.72);font-size:11.5px}
+  .switcher .opt:hover{background:rgba(255,255,255,.12);color:#fff}
+  .switcher .opt.on{background:#fff;color:#0b0e14;font-weight:600}
+  .switcher .note{color:rgba(255,255,255,.38);font-size:11px;padding-right:4px}
+
+  /* ── 灯箱 / 选择模型弹窗 ─────────────────────────────────────────── */
+  .backdrop{position:fixed;inset:0;background:rgba(6,8,12,.62);z-index:9000;display:grid;place-items:center;padding:28px}
+  .lightbox{width:min(880px,94vw);max-height:88vh;background:var(--bg-panel);border:1px solid var(--border-l2);border-radius:var(--r-lg);box-shadow:var(--shadow-2);overflow:hidden;display:flex;flex-direction:column}
+  .lightbox .h{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 16px;border-bottom:1px solid var(--border-l1)}
+  .lightbox .b{aspect-ratio:4/3;background:#fff;overflow:hidden}
+  .lightbox .f{display:flex;gap:16px;flex-wrap:wrap;padding:11px 16px;border-top:1px solid var(--border-l1);font-size:12px;color:var(--label-2)}
+  .modal{width:min(620px,94vw);max-height:84vh;background:var(--bg-panel);border:1px solid var(--border-l2);border-radius:var(--r-lg);box-shadow:var(--shadow-2);display:flex;flex-direction:column;overflow:hidden}
+  .modal .h{display:flex;align-items:center;justify-content:space-between;padding:14px 16px}
+  .modal .h b{font-size:14px}
+  .modal .tools{display:flex;gap:8px;padding:0 16px 10px}
+  .modal input[type=search]{flex:1;height:30px;padding:0 11px;border-radius:var(--r-sm);border:1px solid var(--border-l1);background:var(--bg-elev);color:var(--label-1);font:inherit;font-size:12.5px}
+  .modal .list{flex:1;min-height:0;overflow:auto;padding:0 16px 6px}
+  .modal .prow{display:flex;align-items:center;gap:9px;padding:11px 0 5px;position:sticky;top:0;background:var(--bg-panel)}
+  .modal .prow b{font:700 12.5px/1 var(--mono)}
+  .modal .mrow{display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:var(--r-sm);font-size:12.5px;cursor:pointer}
+  .modal .mrow:hover{background:var(--bg-elev)}
+  .modal .mrow .n{font-family:var(--mono);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .modal input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent)}
+  .modal .f{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-top:1px solid var(--border-l1)}
+  .toast{position:fixed;left:50%;bottom:78px;transform:translateX(-50%);z-index:9500;background:var(--bg-elev);border:1px solid var(--border-l2);color:var(--label-1);border-radius:10px;padding:9px 14px;font-size:12.5px;box-shadow:var(--shadow-2)}
+</style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <i>◇</i><i class="on" title="鹈鹕监视">🚲</i><i>◎</i><i>☰</i><i>⚙</i>
+    </aside>
+    <aside class="side">
+      <h2>面板</h2>
+      <div class="item"><span class="dot">◇</span>会话</div>
+      <div class="item on"><span class="dot">🚲</span>鹈鹕监视</div>
+      <div class="item"><span class="dot">◇</span>技能控制台</div>
+      <div class="item"><span class="dot">◇</span>技能同步</div>
+      <div class="item"><span class="dot">◇</span>会话清理</div>
+    </aside>
+    <main class="main"><div class="stage" id="stage"></div></main>
+  </div>
+
+  <div class="switcher" id="switcher">
+    <button class="arrow" data-act="prev" title="上一个方案（←）">‹</button>
+    <div class="label" id="swLabel"></div>
+    <button class="arrow" data-act="next" title="下一个方案（→）">›</button>
+    <div class="sep"></div>
+    <div class="grp" id="swState"><span class="t">状态</span></div>
+    <div class="sep"></div>
+    <div class="grp" id="swTheme"><span class="t">主题</span></div>
+    <div class="sep"></div>
+    <div class="note">原型预览 · 非产品界面</div>
+  </div>
+
+  <script>
+  /* ═══ mock 数据（取自真实 settings.json 与实测耗时） ═══════════════════ */
+  const PALETTES = [
+    ['#eef2ff','#4338ca','#f59e0b','#94a3b8','#fbbf24'],
+    ['#ecfeff','#0e7490','#fb7185','#a5b4fc','#f97316'],
+    ['#f5f3ff','#6d28d9','#22c55e','#f472b6','#facc15'],
+    ['#fff7ed','#c2410c','#0ea5e9','#a3a3a3','#4ade80'],
+  ];
+  function art(seed){
+    const [sky,ink,acc,mute,acc2] = PALETTES[seed % PALETTES.length];
+    return `<svg viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg">
+      <rect width="400" height="300" fill="${sky}"/>
+      <circle cx="330" cy="56" r="26" fill="${acc}" opacity=".55"/>
+      <path d="M0 232h400" stroke="${mute}" stroke-width="2"/>
+      <g fill="none" stroke="${ink}" stroke-width="4" stroke-linecap="round">
+        <circle cx="128" cy="212" r="42"/><circle cx="286" cy="212" r="42"/>
+        <g stroke-width="2.4">
+          <path d="M128 170v84M86 212h84M98 182l60 60M158 182l-60 60"/>
+          <path d="M286 170v84M244 212h84M256 182l60 60M316 182l-60 60"/>
+        </g>
+        <path d="M128 212l54-62h62l42 62M182 150h-26M286 212l-40-70"/>
+        <path d="M148 132h40" stroke="${acc}" stroke-width="5"/>
+        <path d="M236 142h34" stroke="${acc}" stroke-width="5"/>
+      </g>
+      <g>
+        <ellipse cx="212" cy="118" rx="40" ry="30" fill="#fff" stroke="${ink}" stroke-width="3.5"/>
+        <path d="M240 104c30-4 56 2 74 12-20 12-48 14-76 6z" fill="${acc2}" stroke="${ink}" stroke-width="3"/>
+        <circle cx="246" cy="92" r="17" fill="#fff" stroke="${ink}" stroke-width="3.5"/>
+        <circle cx="252" cy="89" r="3" fill="${ink}"/>
+        <path d="M188 100c-16-14-34-16-48-6 12 16 32 22 50 14z" fill="#fff" stroke="${ink}" stroke-width="3"/>
+        <path d="M196 148l-14 34M228 148l14 34" stroke="${acc}" stroke-width="4" fill="none" stroke-linecap="round"/>
+      </g>
+    </svg>`;
+  }
+  const MODELS = [
+    { model:'deepseek-flash', provider:'taotoken', score:94, trend:+3, runs:6, avgMs:121000, fails:0, best:96, worst:82, spark:[82,88,90,90,94,94], at:'14:52' },
+    { model:'deepseek-v4-flash', provider:'taotoken', score:91, trend:0, runs:5, avgMs:64000, fails:0, best:93, worst:88, spark:[88,90,91,91,91], at:'14:22' },
+    { model:'deepseek-v4-flash-vision-exp', provider:'taotoken', score:88, trend:-4, runs:4, avgMs:47000, fails:0, best:96, worst:88, spark:[96,94,92,88], at:'13:52' },
+    { model:'qwen3.7-max', provider:'taotoken', score:94, trend:+2, runs:3, avgMs:40300, fails:0, best:94, worst:86, spark:[86,90,94], at:'13:22' },
+    { model:'glm-5.3-flash', provider:'taotoken', score:null, trend:0, runs:0, avgMs:null, fails:2, best:null, worst:null, spark:[], at:null, error:'超过 180 秒没有返回（网关 504）' },
+  ];
+  const DRAWINGS = [
+    { id:'20261016-145200_deepseek-flash', model:'deepseek-flash', time:'14:52', ms:119915, score:94, seed:0 },
+    { id:'20261016-142200_deepseek-v4-flash', model:'deepseek-v4-flash', time:'14:22', ms:63210, score:91, seed:1 },
+    { id:'20261016-135200_deepseek-v4-flash-vision-exp', model:'deepseek-v4-flash-vision-exp', time:'13:52', ms:46980, score:88, seed:2 },
+    { id:'20261016-132200_qwen3.7-max', model:'qwen3.7-max', time:'13:22', ms:40289, score:94, seed:3 },
+    { id:'20261016-125200_deepseek-flash', model:'deepseek-flash', time:'12:52', ms:118420, score:94, seed:1 },
+    { id:'20261016-122200_deepseek-v4-flash', model:'deepseek-v4-flash', time:'12:22', ms:65110, score:90, seed:2 },
+    { id:'20261016-115200_deepseek-v4-flash-vision-exp', model:'deepseek-v4-flash-vision-exp', time:'11:52', ms:47220, score:92, seed:3 },
+    { id:'20261016-112200_qwen3.7-max', model:'qwen3.7-max', time:'11:22', ms:39120, score:90, seed:0 },
+    { id:'20261016-105200_deepseek-flash', model:'deepseek-flash', time:'10:52', ms:120900, score:90, seed:2 },
+  ];
+  const CATALOG = [
+    { provider:'taotoken', key:'可用', models:['deepseek-flash','deepseek-v4-flash','deepseek-v4-flash-vision-exp','deepseek-v4-pro','qwen3.7-max','qwen3.5-omni-flash','glm-5.3-flash','glm-5.2','kimi-k3','gpt-5.5','claude-sonnet-4-6','gemini-3.1-pro-preview'] },
+  ];
+
+  /* ═══ 状态（内存，无持久化） ═══════════════════════════════════════════ */
+  const params = new URLSearchParams(location.search);
+  const state = {
+    variant: params.get('variant') || 'A',
+    theme: params.get('theme') || 'dark',
+    mode: params.get('mode') || 'ready',      // ready | running | empty
+    filter: null, selected: null, picked: null,
+    progress: 0, running: null, pickedTargets: ['deepseek-flash','deepseek-v4-flash','deepseek-v4-flash-vision-exp'],
+    toast: null,
+  };
+  const VARIANTS = [
+    { key:'A', name:'控制台', note:'左栏模型清单 + 高密度网格', render:VariantA },
+    { key:'B', name:'画册',   note:'最新作品 hero + 胶片条',     render:VariantB },
+    { key:'C', name:'排行榜', note:'排名表为主 + 双栏预览',       render:VariantC },
+    { key:'D', name:'商业',   note:'KPI + 焦点榜 + 柔和卡片',     render:VariantD },
+  ];
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+  const ms = (v) => v == null ? '—' : v < 1000 ? v + 'ms' : (v / 1000).toFixed(1) + 's';
+  const scoreColor = (s) => s == null ? 'var(--label-3)' : s >= 90 ? 'var(--ok)' : s >= 70 ? 'var(--warn)' : 'var(--err)';
+  const active = () => MODELS.filter((m) => state.mode !== 'empty' && state.pickedTargets.includes(m.model));
+  const visible = () => DRAWINGS.filter((d) => (state.filter ? d.model === state.filter : true));
+  const byModel = (name) => MODELS.find((m) => m.model === name) || {};
+
+  function sparkline(values, color, w = 54, h = 16){
+    if (!values || values.length < 2) return `<svg width="${w}" height="${h}"></svg>`;
+    const min = Math.min(...values), max = Math.max(...values), span = Math.max(1, max - min);
+    const pts = values.map((v, i) => [ (i / (values.length - 1)) * (w - 2) + 1, h - 2 - ((v - min) / span) * (h - 4) ]);
+    return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline points="${pts.map((p) => p.join(',')).join(' ')}" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+  }
+  function ring(score, size, stroke){
+    const r = (size - stroke) / 2, c = 2 * Math.PI * r, on = score == null ? 0 : (score / 100) * c;
+    return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="position:absolute;inset:0">
+      <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="var(--border-l2)" stroke-width="${stroke}"/>
+      <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="${scoreColor(score)}" stroke-width="${stroke}"
+        stroke-dasharray="${on} ${c - on}" stroke-linecap="round" transform="rotate(-90 ${size/2} ${size/2})"/></svg>`;
+  }
+  const trend = (t) => t > 0 ? `<span class="up">↑ +${t}</span>` : t < 0 ? `<span class="down">↓ ${t}</span>` : `<span class="flat">→ 0</span>`;
+  const dotClass = (m) => m.error ? 'err' : m.score == null ? '' : 'ok';
+  function progressBanner(){
+    if (state.mode !== 'running') return '';
+    const total = state.pickedTargets.length, done = state.progress;
+    return `<div class="banner"><span class="pill acc">检测中</span>
+      <span>正在检测 <b class="mono">${esc(state.running || '…')}</b></span>
+      <span class="bar"><i style="width:${total ? (done / total) * 100 : 0}%"></i></span>
+      <span class="mono" style="color:var(--label-3)">已完成 ${done}/${total}</span></div>`;
+  }
+
+  /* ═══ 方案 A：控制台 ══════════════════════════════════════════════════ */
+  function VariantA(){
+    if (state.mode === 'empty') return `<div class="vA">${modelRailA()}${emptyState()}</div>`;
+    const list = visible();
+    return `<div class="vA">
+      ${modelRailA()}
+      <div class="work">
+        <div class="bar">
+          <h1>鹈鹕监视</h1>
+          <span class="pill mute">每 30 分钟</span>
+          <span class="pill mute">并行 3</span>
+          <div style="flex:1"></div>
+          <div class="seg">
+            <button class="${state.filter ? '' : 'on'}" data-act="clear-filter">全部 ${DRAWINGS.length}</button>
+            <button class="${state.filter ? 'on' : ''}" data-act="keep-filter" ${state.filter ? '' : 'disabled'}>${state.filter ? esc(short(state.filter)) : '未筛选'}</button>
+          </div>
+          <button class="btn" data-act="picker">选择模型</button>
+          <button class="btn primary" data-act="run" ${state.mode === 'running' ? 'disabled' : ''}>${state.mode === 'running' ? '检测中…' : '全部检测一遍'}</button>
+        </div>
+        ${state.mode === 'running' ? `<div class="prog"><i style="width:${(state.progress / state.pickedTargets.length) * 100}%"></i></div>` : ''}
+        <div class="grid">
+          ${list.map((d) => `<button class="card" data-act="open" data-id="${d.id}">
+            <div class="thumb"><div class="art">${art(d.seed)}</div><span class="pill acc sc mono">${d.score}</span></div>
+            <div class="cap"><span class="m">${esc(short(d.model))}</span><span class="t mono">${d.time} · ${ms(d.ms)}</span></div>
+          </button>`).join('')}
+        </div>
+      </div>
+    </div>`;
+  }
+  function modelRailA(){
+    const rows = MODELS.map((m) => {
+      const on = state.filter === m.model;
+      const err = state.mode === 'running' && state.running === m.model ? 'run' : dotClass(m);
+      return `<button class="mrow ${on ? 'on' : ''}" data-act="filter" data-model="${esc(m.model)}">
+        <span class="dot ${err}"></span>
+        <span><span class="mname">${esc(short(m.model))}</span>
+          <span class="msub">${m.error ? '上次失败' : m.score == null ? '还没跑过' : `${m.runs} 次 · 均 ${ms(m.avgMs)}`}</span></span>
+        <span style="text-align:right">
+          <span class="mscore" style="color:${scoreColor(m.score)}">${m.score == null ? '—' : m.score}</span>
+          <span style="display:block;margin-top:3px">${sparkline(m.spark, scoreColor(m.score))}</span>
+        </span>
+      </button>`;
+    }).join('');
+    return `<div class="col">
+      <div class="colHead"><b>模型</b><span class="mono" style="color:var(--label-3);font-size:11px">${state.pickedTargets.length} 个已选</span></div>
+      <div class="models">${rows}</div>
+      <div class="colFoot"><button class="btn ghost" style="width:100%" data-act="picker">＋ 选择模型</button></div>
+    </div>`;
+  }
+
+  /* ═══ 方案 B：画册 ════════════════════════════════════════════════════ */
+  function VariantB(){
+    const list = visible();
+    if (state.mode === 'empty') return `<div class="vB"><div class="top"><div><h1>鹈鹕监视</h1><div class="sub">让选中的模型画同一道「鹈鹕骑车」</div></div><div style="display:flex;gap:8px"><button class="btn" data-act="picker">选择模型</button><button class="btn primary" data-act="run">全部检测一遍</button></div></div>${emptyState()}</div>`;
+    const hero = list[0];
+    const rest = list.slice(1);
+    return `<div class="vB">
+      <div class="top">
+        <div><h1>鹈鹕监视</h1>
+          <div class="sub">${active().length} 个模型 · 每 30 分钟一轮 · 共 ${DRAWINGS.length} 张画${state.mode === 'running' ? ` · 正在检测 ${esc(state.running || '')}` : ''}</div></div>
+        <div style="display:flex;gap:8px">
+          <button class="btn" data-act="picker">选择模型</button>
+          <button class="btn primary" data-act="run" ${state.mode === 'running' ? 'disabled' : ''}>${state.mode === 'running' ? '检测中…' : '全部检测一遍'}</button>
+        </div>
+      </div>
+      ${hero ? `<div class="hero">
+        <button class="heroArt" data-act="open" data-id="${hero.id}">
+          <div class="art">${art(hero.seed)}</div>
+          <div class="cap">
+            <div><div class="m">${esc(hero.model)}</div><div class="meta">${hero.time} · 用时 ${ms(hero.ms)} · 结构分</div></div>
+            <div class="bigscore">${hero.score}<small>/100</small></div>
+          </div>
+        </button>
+        <div class="stack">
+          <div class="stackH">最新几张</div>
+          ${rest.slice(0, 5).map((d) => `<button class="mini" data-act="open" data-id="${d.id}">
+            <span class="a"><span class="art">${art(d.seed)}</span></span>
+            <span><span class="mono" style="font-weight:600;font-size:12px">${esc(short(d.model))}</span>
+              <span style="display:block;color:var(--label-3);font-size:11px;margin-top:3px">${d.time} · ${d.score} 分</span></span>
+          </button>`).join('')}
+        </div>
+      </div>` : ''}
+      <div class="film">
+        <button class="reel ${state.filter ? '' : 'on'}" data-act="clear-filter" style="padding:5px 14px">全部 ${DRAWINGS.length}</button>
+        ${MODELS.map((m) => `<button class="reel ${state.filter === m.model ? 'on' : ''}" data-act="filter" data-model="${esc(m.model)}">
+          <span class="ring">${ring(m.score, 34, 3)}<span style="position:relative;color:${scoreColor(m.score)}">${m.score == null ? '—' : m.score}</span></span>
+          <span><b>${esc(short(m.model))}</b>
+            <span style="display:block;color:var(--label-3);font-size:11px;margin-top:2px">${m.error ? '超时' : m.trend > 0 ? '+' + m.trend : m.trend < 0 ? m.trend : '持平'}</span></span>
+        </button>`).join('')}
+      </div>
+      <div class="wall">
+        ${(state.filter ? list : rest).map((d) => `<button class="shot" data-act="open" data-id="${d.id}">
+          <span class="a" style="display:block"><span class="art">${art(d.seed)}</span></span>
+          <span class="cap"><span class="mono" style="font-weight:600;font-size:12.5px">${esc(short(d.model))}</span>
+            <span style="display:flex;align-items:center;gap:8px"><span style="color:var(--label-3);font-size:11.5px">${d.time}</span><span class="pill acc mono">${d.score}</span></span></span>
+        </button>`).join('')}
+      </div>
+    </div>`;
+  }
+
+  /* ═══ 方案 C：排行榜 / 终端 ═══════════════════════════════════════════ */
+  function VariantC(){
+    const list = visible();
+    const rows = MODELS.map((m, i) => `<tr class="${state.filter === m.model ? 'on' : ''} ${i === 0 ? 'lead' : ''}" data-act="filter" data-model="${esc(m.model)}">
+      <td class="rank">${i + 1}</td>
+      <td><span class="nm">${esc(m.model)}</span></td>
+      <td style="font-weight:700;color:${scoreColor(m.score)}">${m.score == null ? '—' : m.score}</td>
+      <td>${m.score == null ? '<span class="flat">—</span>' : trend(m.trend)}</td>
+      <td>${m.spark.length ? sparkline(m.spark, scoreColor(m.score), 64, 18) : '<span class="flat">无数据</span>'}</td>
+      <td>${m.runs || '—'}</td>
+      <td>${m.avgMs ? ms(m.avgMs) : '—'}</td>
+      <td style="color:${m.fails ? 'var(--err)' : 'inherit'}">${m.fails || 0}</td>
+      <td>${m.error ? `<span class="pill err" title="${esc(m.error)}">超时</span>` : m.score == null ? '<span class="pill mute">未跑</span>' : '<span class="pill ok">正常</span>'}</td>
+    </tr>`).join('');
+    const sel = list.find((d) => d.id === state.selected) || list[0] || null;
+    return `<div class="vC">
+      <div class="top">
+        <span><span class="lbl">pelican-watch</span> <b>排行榜</b></span>
+        <span style="display:flex;gap:14px;align-items:center;color:var(--label-3)">
+          <span>下次 <b class="mono" style="color:var(--label-1)">15:22:00</b></span>
+          ${state.mode === 'running' ? `<span class="pill acc">检测中 ${state.progress}/${state.pickedTargets.length}</span>` : `<span class="pill ok">空闲</span>`}
+          <button class="btn" data-act="picker">选择模型</button>
+          <button class="btn primary" data-act="run" ${state.mode === 'running' ? 'disabled' : ''}>run all</button>
+        </span>
+      </div>
+      <div class="tableWrap">
+        ${state.mode === 'empty' ? emptyState() : `<table>
+          <thead><tr><th>#</th><th>模型</th><th>当前分</th><th>趋势</th><th>走势</th><th>次数</th><th>平均耗时</th><th>失败</th><th>状态</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`}
+      </div>
+      ${state.mode === 'empty' ? '' : `<div class="bottom">
+        <div class="strip">
+          ${list.map((d) => `<button class="tl ${sel && sel.id === d.id ? 'on' : ''}" data-act="select" data-id="${d.id}">
+            <span class="art">${art(d.seed)}</span><span class="pill acc sc mono" style="font-size:10px;height:17px">${d.score}</span>
+          </button>`).join('')}
+        </div>
+        <div class="view">
+          <div class="a" style="display:block">${sel ? `<span class="art">${art(sel.seed)}</span>` : ''}</div>
+          <div class="kv">
+            ${sel ? `<span><span class="lbl">model</span> <b>${esc(sel.model)}</b></span>
+            <span><span class="lbl">time</span> ${sel.time}</span>
+            <span><span class="lbl">took</span> ${ms(sel.ms)}</span>
+            <span><span class="lbl">score</span> <b style="color:${scoreColor(sel.score)}">${sel.score}</b></span>
+            <span><span class="lbl">svg</span> ok</span>
+            <button class="btn ghost" data-act="open" data-id="${sel.id}">放大 ↗</button>` : '<span class="lbl">无数据</span>'}
+          </div>
+        </div>
+      </div>`}
+    </div>`;
+  }
+
+  /* ═══ 方案 D：商业 SaaS ═══════════════════════════════════════════════ */
+  function VariantD(){
+    const list = visible();
+    const scored = MODELS.filter((m) => m.score != null);
+    const avg = scored.length ? Math.round(scored.reduce((s, m) => s + m.score, 0) / scored.length) : 0;
+    const best = scored.slice().sort((a, b) => b.score - a.score)[0];
+    return `<div class="vD"><div class="wrap">
+      <div class="head">
+        <div><h1>鹈鹕监视</h1><div class="sub">${state.mode === 'empty' ? '还没有选择模型' : `${active().length} 个模型正在被检测 · 每 30 分钟一轮 · 同一道题面`}</div></div>
+        <div style="display:flex;gap:8px">
+          <button class="btn" data-act="picker">选择模型</button>
+          <button class="btn primary" data-act="run" ${state.mode === 'running' ? 'disabled' : ''}>${state.mode === 'running' ? '检测中…' : '全部检测一遍'}</button>
+        </div>
+      </div>
+      ${progressBanner()}
+      <div class="kpis">
+        <div class="kpi"><div class="k">已选模型</div><div class="v">${state.pickedTargets.length}</div><div class="d">并行 3 个 · 每轮各一张</div></div>
+        <div class="kpi"><div class="k">平均结构分</div><div class="v" style="color:${scoreColor(avg)}">${state.mode === 'empty' ? '—' : avg}</div><div class="d">满分 100 · 结构启发式</div></div>
+        <div class="kpi"><div class="k">最高分</div><div class="v">${state.mode === 'empty' ? '—' : (best ? best.score : '—')}</div><div class="d">${best ? esc(short(best.model)) : '暂无'}</div></div>
+        <div class="kpi"><div class="k">历史画作</div><div class="v">${state.mode === 'empty' ? 0 : DRAWINGS.length}</div><div class="d">最多保留 12 张 / 模型</div></div>
+      </div>
+      ${state.mode === 'empty' ? emptyState() : `<div class="board">
+        <div class="boardH"><b>智商看板</b><span style="color:var(--label-3);font-size:12px">点一行筛选下方的画作</span></div>
+        <div class="spot">
+          <div class="donut">${ring(best ? best.score : 0, 104, 8)}<div class="num" style="color:${scoreColor(best ? best.score : 0)}">${best ? best.score : '—'}<small>结构分</small></div></div>
+          <div>
+            <div class="spotName">🥇 ${esc(best ? best.model : '—')} <span class="pill ok">表现最好</span></div>
+            <div class="spotMeta">最近一次 ${best ? best.at : '—'} · 已检测 ${best ? best.runs : 0} 次 · 用时 ${best ? ms(best.avgMs) : '—'}</div>
+            <div class="statGrid">
+              <div class="stat"><div class="k">趋势</div><div class="v">${best ? (best.trend > 0 ? '↑ +' + best.trend : best.trend < 0 ? '↓ ' + best.trend : '→ 持平') : '—'}</div></div>
+              <div class="stat"><div class="k">最好 / 最差</div><div class="v">${best ? `${best.best} / ${best.worst}` : '—'}</div></div>
+              <div class="stat"><div class="k">走势</div><div class="v">${best ? sparkline(best.spark, scoreColor(best.score), 70, 22) : '—'}</div></div>
+            </div>
+          </div>
+          <button class="btn" data-act="run-one" data-model="${best ? esc(best.model) : ''}">只测这个</button>
+        </div>
+        ${MODELS.map((m, i) => `<button class="row ${state.filter === m.model ? 'on' : ''}" data-act="filter" data-model="${esc(m.model)}">
+          <span class="medal ${i === 0 ? 'g1' : i === 1 ? 'g2' : i === 2 ? 'g3' : ''}">${i + 1}</span>
+          <span><span class="rowName">${esc(m.model)}</span>
+            <span class="rowSub">${m.error ? `<span style="color:var(--err)">上次失败：${esc(m.error)}</span>` : m.score == null ? '还没跑过' : `${m.runs} 次 · 均 ${ms(m.avgMs)} · 最好 ${m.best}`}</span></span>
+          <span class="rowScore" style="color:${scoreColor(m.score)}">${m.score == null ? '—' : m.score}</span>
+          <span style="width:74px;text-align:right">${m.spark.length ? sparkline(m.spark, scoreColor(m.score), 66, 22) : '<span style="color:var(--label-3);font-size:11px">等待首次检测</span>'}</span>
+          <span style="width:52px;text-align:right;color:var(--label-3);font-size:11.5px">${m.at || '—'}</span>
+        </button>`).join('')}
+      </div>`}
+      <div class="sec">
+        <div class="chips">
+          <button class="chip ${state.filter ? '' : 'on'}" data-act="clear-filter">全部画作</button>
+          ${MODELS.map((m) => `<button class="chip ${state.filter === m.model ? 'on' : ''}" data-act="filter" data-model="${esc(m.model)}">${esc(short(m.model))} ${m.score == null ? '' : m.score}</button>`).join('')}
+        </div>
+        <span style="color:var(--label-3);font-size:12px">${list.length} 张</span>
+      </div>
+      ${state.mode === 'empty'
+        ? emptyState()
+        : `<div class="cards">
+        ${list.map((d) => `<button class="gcard" data-act="open" data-id="${d.id}">
+          <span class="a" style="display:block"><span class="art">${art(d.seed)}</span></span>
+          <span class="cap">
+            <span><span class="mono" style="display:block;font-weight:600;font-size:12.5px">${esc(short(d.model))}</span>
+              <span style="color:var(--label-3);font-size:11.5px">${d.time} · 用时 ${ms(d.ms)}</span></span>
+            <span class="pill acc mono" style="height:24px;font-size:12px">${d.score}</span>
+          </span>
+        </button>`).join('')}
+      </div>`}
+    </div></div>`;
+  }
+
+  function emptyState(){
+    return `<div class="empty"><div class="g">🦩</div>
+      <b>${state.mode === 'empty' && !state.pickedTargets.length ? '先在「选择模型」里勾选要检测的模型' : '还没有画作'}</b>
+      <div>点右上角「全部检测一遍」立即开始，或等调度器到点自动画</div></div>`;
+  }
+  const short = (m) => m.length > 22 ? m.slice(0, 21) + '…' : m;
+
+  /* ═══ 弹层：灯箱 / 选择模型 ═══════════════════════════════════════════ */
+  function overlays(){
+    let html = '';
+    const d = state.selected ? DRAWINGS.find((x) => x.id === state.selected) : null;
+    if (d) html += `<div class="backdrop" data-act="close">
+      <div class="lightbox" data-stop>
+        <div class="h"><b class="mono" style="font-size:12.5px">${esc(d.id)}</b>
+          <button class="btn ghost" data-act="close">✕</button></div>
+        <div class="b">${art(d.seed)}</div>
+        <div class="f"><span>模型 <b class="mono">${esc(d.model)}</b></span><span>时间 ${d.time}</span><span>用时 ${ms(d.ms)}</span>
+          <span>得分 <b style="color:${scoreColor(d.score)}">${d.score}</b></span><span>命中结构 svg, wheels, spokes, frame, handlebar, seat, pedals, pelican, wings, closed, size</span></div>
+      </div></div>`;
+    if (state.picked !== null) html += pickerModal();
+    return html;
+  }
+  function pickerModal(){
+    const q = (state.picked || '').toLowerCase();
+    return `<div class="backdrop" data-act="close-picker">
+      <div class="modal" data-stop>
+        <div class="h"><b>选择要检测的模型</b><button class="btn ghost" data-act="close-picker">✕</button></div>
+        <div class="tools">
+          <input type="search" placeholder="搜索模型…" value="${esc(state.picked || '')}" data-act="search">
+          <button class="btn">全选</button><button class="btn">清空</button>
+        </div>
+        <div class="list">
+          ${CATALOG.map((p) => `<div class="prow"><b>${p.provider}</b><span class="pill ok">${p.key}</span>
+            <span style="color:var(--label-3);font-size:11.5px">${p.models.length} 个模型</span></div>
+            ${p.models.filter((m) => !q || m.toLowerCase().includes(q)).map((m) => `<label class="mrow">
+              <input type="checkbox" ${state.pickedTargets.includes(m) ? 'checked' : ''} data-act="toggle" data-model="${esc(m)}">
+              <span class="n">${esc(m)}</span>
+              ${byModel(m).error ? '<span class="pill err">超时</span>' : byModel(m).score != null ? `<span class="pill mute mono">${byModel(m).score}</span>` : ''}
+            </label>`).join('')}`).join('')}
+        </div>
+        <div class="f"><span style="color:var(--label-3);font-size:12px">已选 <b class="mono" style="color:var(--label-1)">${state.pickedTargets.length}</b> 个模型</span>
+          <span style="display:flex;gap:8px"><button class="btn" data-act="close-picker">取消</button><button class="btn primary" data-act="close-picker">保存</button></span></div>
+      </div></div>`;
+  }
+
+  /* ═══ 渲染 + 事件 ═════════════════════════════════════════════════════ */
+  const stage = document.getElementById('stage');
+  function render(){
+    const v = VARIANTS.find((x) => x.key === state.variant) || VARIANTS[0];
+    document.documentElement.dataset.theme = state.theme;
+    stage.innerHTML = v.render() + overlays() + (state.toast ? `<div class="toast">${esc(state.toast)}</div>` : '');
+    document.getElementById('swLabel').innerHTML = `<b>${v.key}</b> <span>${v.name} · ${v.note}</span>`;
+    const g = (id) => document.getElementById(id);
+    g('swState').innerHTML = '<span class="t">状态</span>' + [['ready','就绪'],['running','检测中'],['empty','无数据']]
+      .map(([k, t]) => `<button class="opt ${state.mode === k ? 'on' : ''}" data-act="mode" data-mode="${k}">${t}</button>`).join('');
+    g('swTheme').innerHTML = '<span class="t">主题</span>' + [['dark','深'],['light','浅']]
+      .map(([k, t]) => `<button class="opt ${state.theme === k ? 'on' : ''}" data-act="theme" data-theme="${k}">${t}</button>`).join('');
+    syncUrl();
+    const input = document.querySelector('input[type=search]');
+    if (input && state.picked !== null){ input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+  }
+  function syncUrl(){
+    const p = new URLSearchParams();
+    if (state.variant !== 'A') p.set('variant', state.variant);
+    if (state.theme !== 'dark') p.set('theme', state.theme);
+    if (state.mode !== 'ready') p.set('mode', state.mode);
+    const q = p.toString();
+    history.replaceState(null, '', q ? '?' + q : location.pathname);
+  }
+  function toast(text){ state.toast = text; render(); setTimeout(() => { state.toast = null; render(); }, 1800); }
+
+  let runTimer = null;
+  function simulateRun(models){
+    const targets = models && models.length ? models : state.pickedTargets.slice();
+    if (!targets.length) { toast('先在「选择模型」里勾选模型'); return; }
+    state.mode = 'running'; state.progress = 0; state.running = targets[0]; render();
+    let i = 0;
+    clearInterval(runTimer);
+    runTimer = setInterval(() => {
+      i += 1;
+      state.progress = Math.min(i, targets.length);
+      state.running = targets[Math.min(i, targets.length - 1)];
+      if (i >= targets.length) {
+        clearInterval(runTimer); state.mode = 'ready'; state.running = null;
+        toast('本轮检测完成，画作已更新');
+      }
+      render();
+    }, 900);
+  }
+
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-act]');
+    if (!el) return;
+    const act = el.dataset.act;
+    // 点击弹层内部（[data-stop]）时不要触发背景的关闭动作；弹层内的按钮照常生效。
+    const stop = e.target.closest('[data-stop]');
+    if (stop && !stop.contains(el)) return;
+    if (act === 'prev' || act === 'next') {
+      const i = VARIANTS.findIndex((x) => x.key === state.variant);
+      const n = act === 'next' ? (i + 1) % VARIANTS.length : (i - 1 + VARIANTS.length) % VARIANTS.length;
+      state.variant = VARIANTS[n].key; render(); return;
+    }
+    if (act === 'mode'){ state.mode = el.dataset.mode; if (state.mode === 'empty') state.filter = null; render(); return; }
+    if (act === 'theme'){ state.theme = el.dataset.theme; render(); return; }
+    if (act === 'filter'){ const m = el.dataset.model; state.filter = state.filter === m ? null : m; render(); return; }
+    if (act === 'clear-filter'){ state.filter = null; render(); return; }
+    if (act === 'keep-filter'){ return; }
+    if (act === 'open'){ state.selected = el.dataset.id; render(); return; }
+    if (act === 'select'){ state.selected = el.dataset.id; render(); return; }
+    if (act === 'close'){ state.selected = null; render(); return; }
+    if (act === 'picker'){ state.picked = ''; render(); return; }
+    if (act === 'close-picker'){ state.picked = null; render(); return; }
+    if (act === 'toggle'){
+      const m = el.dataset.model;
+      state.pickedTargets = state.pickedTargets.includes(m) ? state.pickedTargets.filter((x) => x !== m) : state.pickedTargets.concat([m]);
+      render(); return;
+    }
+    if (act === 'run'){ simulateRun(null); return; }
+    if (act === 'run-one'){ simulateRun([el.dataset.model]); return; }
+  });
+  document.addEventListener('input', (e) => {
+    if (e.target.dataset && e.target.dataset.act === 'search'){ state.picked = e.target.value; render(); }
+  });
+  document.addEventListener('keydown', (e) => {
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) {
+      if (e.key === 'Escape'){ state.picked = null; state.selected = null; render(); }
+      return;
+    }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight'){
+      const i = VARIANTS.findIndex((x) => x.key === state.variant);
+      const n = e.key === 'ArrowRight' ? (i + 1) % VARIANTS.length : (i - 1 + VARIANTS.length) % VARIANTS.length;
+      state.variant = VARIANTS[n].key; render(); e.preventDefault(); return;
+    }
+    if (e.key === 'Escape'){ state.selected = null; state.picked = null; render(); }
+    if (e.key >= '1' && e.key <= String(VARIANTS.length)){ state.variant = VARIANTS[Number(e.key) - 1].key; render(); }
+  });
+  window.addEventListener('popstate', () => {
+    const p = new URLSearchParams(location.search);
+    state.variant = p.get('variant') || 'A'; state.theme = p.get('theme') || 'dark'; state.mode = p.get('mode') || 'ready';
+    render();
+  });
+  render();
+  </script>
+</body>
+</html>
