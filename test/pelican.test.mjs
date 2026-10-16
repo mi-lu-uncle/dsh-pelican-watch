@@ -169,5 +169,26 @@ try {
 assert.ok(PROMPT.includes('鹈鹕') && PROMPT.includes('自行车'));
 assert.ok(!/skill|工具|agent/i.test(PROMPT), 'prompt stays a pure drawing task');
 
+// ---- client entry contract: BOTH apply and inject must be exported ----
+// A bare `return { apply }` makes the entry fail to activate and aborts the
+// whole web boot ("1 entry did not activate"). Load the real client source
+// through a ModuleLoader shim and assert the export shape.
+{
+  const captured = [];
+  const fakeWindow = { __ModuleLoader__: { load: (def) => captured.push(def) } };
+  const source = fs.readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
+  const fakeRequire = (name) => {
+    if (name === 'react') return { createElement: () => null };
+    throw new Error(`unexpected require: ${name}`);
+  };
+  new Function('window', 'require', source)(fakeWindow, fakeRequire);
+  assert.equal(captured.length, 1, 'client registers exactly one module');
+  const clientExports = captured[0].factory(fakeRequire);
+  assert.equal(typeof clientExports.apply, 'function', 'client must export apply');
+  assert.ok(Array.isArray(clientExports.inject), 'client must export inject');
+  assert.ok(clientExports.inject.includes('slots') && clientExports.inject.includes('locale'),
+    'inject must declare the services apply uses');
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('pelican: OK');
