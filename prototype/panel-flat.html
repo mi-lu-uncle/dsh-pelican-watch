@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>原型：鹈鹕监视 · 全部平铺（零点击）</title>
+<!--
+  一次性原型，只为回答一个问题：
+    「鹈鹕监视面板能不能把信息全部平铺出来，不用点任何东西就能看完？」
+  四个结构完全不同的答案（URL 参数 / 底部浮动栏 / ←→ / 1-4 切换）：
+
+    E 一屏看板   每模型一列，一屏不出滚动：分数、趋势、走势线、最新一张、最近几张
+    F 模型横幅   每个模型一条横带：左边它的全部指标，右边它画过的每一张
+    G 数据墙     上面是「每一次检测」的完整表格，下面是全部画作的墙
+    H 轮次对比   一行一轮：同一轮里各模型并排，直接看谁降智
+
+  数据取自真实 settings.json（3 个模型）与实测耗时（flash 145s/88 分、
+  vision-exp 132s/94 分、v4-flash 超时）。画作是内联占位 SVG。
+  正式实现见 main 分支的 lib/client.js；本文件只归档在原型分支。
+-->
+<style>
+  /* ── 令牌（DSH 的 --dsw-alias-* 的近似值，仅为原型的观感服务） ───────── */
+  :root{
+    --bg-app:#0a0c11; --bg-shell:#0e1117; --bg-panel:#12151d; --bg-card:#171b25; --bg-elev:#1e2330;
+    --border-l1:rgba(255,255,255,.07); --border-l2:rgba(255,255,255,.14);
+    --label-1:#eef1f7; --label-2:#a4adbd; --label-3:#6b7382;
+    --accent:#6366f1; --accent-ink:#ffffff; --accent-soft:rgba(99,102,241,.14);
+    --ok:#22c55e; --warn:#f59e0b; --err:#ef4444;
+    --shadow-1:0 1px 2px rgba(0,0,0,.5); --shadow-2:0 18px 44px rgba(0,0,0,.5);
+    --r-sm:8px; --r-md:12px; --r-lg:16px;
+    --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue",Arial,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  [data-theme="light"]{
+    --bg-app:#eef0f5; --bg-shell:#f7f8fb; --bg-panel:#ffffff; --bg-card:#ffffff; --bg-elev:#f3f5f9;
+    --border-l1:rgba(15,23,42,.07); --border-l2:rgba(15,23,42,.14);
+    --label-1:#0f172a; --label-2:#4a5568; --label-3:#8b95a5;
+    --accent-soft:rgba(99,102,241,.10);
+    --shadow-1:0 1px 2px rgba(15,23,42,.06),0 1px 3px rgba(15,23,42,.07);
+    --shadow-2:0 16px 40px rgba(15,23,42,.14);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg-app);color:var(--label-1);font:13px/1.5 var(--font);-webkit-font-smoothing:antialiased}
+  button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+  /* ── 仿真 DSH 外壳 ─────────────────────────────────────────────────── */
+  .shell{display:flex;height:100%;overflow:hidden}
+  .rail{width:52px;flex:none;background:var(--bg-shell);border-right:1px solid var(--border-l1);display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 0}
+  .rail i{width:30px;height:30px;border-radius:9px;display:flex;align-items:center;justify-content:center;color:var(--label-3)}
+  .rail i.on{background:var(--accent-soft);color:var(--accent)}
+  .side{width:236px;flex:none;background:var(--bg-shell);border-right:1px solid var(--border-l1);display:flex;flex-direction:column;padding:12px 10px}
+  .side h2{margin:4px 6px 10px;font-size:12px;font-weight:600;color:var(--label-3);letter-spacing:.04em;text-transform:uppercase}
+  .side .item{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:8px;color:var(--label-2);font-size:13px}
+  .side .item.on{background:var(--bg-elev);color:var(--label-1);font-weight:600}
+  .side .item span.dot{width:15px;text-align:center;opacity:.85}
+  .main{flex:1;min-width:0;background:var(--bg-panel);display:flex;flex-direction:column;overflow:hidden}
+  .stage{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column}
+
+  /* ── 通用零件（各方案共用的小积木，布局各自独立） ───────────────────── */
+  .btn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 11px;border-radius:var(--r-sm);
+       border:1px solid var(--border-l2);background:transparent;color:var(--label-1);font-size:12.5px;white-space:nowrap}
+  .btn:hover{background:var(--bg-elev)}
+  .btn.primary{background:var(--accent);border-color:transparent;color:var(--accent-ink)}
+  .btn.primary:hover{filter:brightness(1.08)}
+  .btn.ghost{border-color:transparent;color:var(--label-2)}
+  .btn.ghost:hover{background:var(--bg-elev);color:var(--label-1)}
+  .btn[disabled]{opacity:.45;cursor:not-allowed}
+  .pill{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap}
+  .pill.ok{background:color-mix(in srgb,var(--ok) 15%,transparent);color:var(--ok)}
+  .pill.warn{background:color-mix(in srgb,var(--warn) 15%,transparent);color:var(--warn)}
+  .pill.err{background:color-mix(in srgb,var(--err) 15%,transparent);color:var(--err)}
+  .pill.acc{background:var(--accent-soft);color:var(--accent)}
+  .pill.mute{background:var(--bg-elev);color:var(--label-3)}
+  .art{width:100%;height:100%;display:block}
+  .art svg{width:100%;height:100%;display:block}
+
+
+  /* ── 空态 / 骨架 ──────────────────────────────────────────────────── */
+  .empty{flex:1;display:grid;place-items:center;text-align:center;color:var(--label-3);padding:40px}
+  .empty .g{font-size:34px;margin-bottom:10px}
+  .empty b{display:block;color:var(--label-2);font-size:14px;margin-bottom:6px}
+  .skel{background:linear-gradient(90deg,var(--bg-elev) 25%,color-mix(in srgb,var(--bg-elev) 55%,var(--bg-card)) 37%,var(--bg-elev) 63%);background-size:400% 100%;animation:sh 1.3s ease-in-out infinite}
+  @keyframes sh{0%{background-position:100% 0}100%{background-position:0 0}}
+
+  /* ── 浮动切换栏（刻意不同于页面本身） ────────────────────────────── */
+  .switcher{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:9999;display:flex;align-items:center;gap:10px;
+    background:#0b0e14;color:#fff;border:1px solid rgba(255,255,255,.16);border-radius:999px;padding:7px 10px 7px 8px;
+    box-shadow:0 18px 44px rgba(0,0,0,.5);font:12px/1 var(--font)}
+  .switcher .arrow{width:28px;height:28px;border-radius:999px;display:grid;place-items:center;background:rgba(255,255,255,.1);color:#fff;font-size:14px}
+  .switcher .arrow:hover{background:rgba(255,255,255,.2)}
+  .switcher .label{min-width:186px;text-align:center;white-space:nowrap}
+  .switcher .label b{font-weight:700}
+  .switcher .label span{color:rgba(255,255,255,.6);margin-left:6px}
+  .switcher .sep{width:1px;height:22px;background:rgba(255,255,255,.16)}
+  .switcher .grp{display:flex;gap:4px;align-items:center}
+  .switcher .grp .t{color:rgba(255,255,255,.5);font-size:11px;margin-right:2px}
+  .switcher .opt{height:24px;padding:0 9px;border-radius:999px;color:rgba(255,255,255,.72);font-size:11.5px}
+  .switcher .opt:hover{background:rgba(255,255,255,.12);color:#fff}
+  .switcher .opt.on{background:#fff;color:#0b0e14;font-weight:600}
+  .switcher .note{color:rgba(255,255,255,.38);font-size:11px;padding-right:4px}
+
+
+  /* ══ 平铺方案 E/F/G/H 专用（前缀 pwHdr/kv/artBox 等，避免与基座撞名） ══ */
+  .stage>*{min-height:0}
+
+  /* 面板顶栏：所有方案共用，把「这轮怎么跑、跑到哪了」一次说清 */
+  .pwHdr{flex:none;display:flex;align-items:center;justify-content:space-between;gap:18px;
+    padding:13px 18px;border-bottom:1px solid var(--border-l1);background:var(--bg-panel)}
+  .pwHdr h1{margin:0;font-size:15px;font-weight:700;letter-spacing:-.01em}
+  .pwHdr .sub{color:var(--label-3);font-size:11.5px;margin-top:3px}
+  .pwHdr .right{display:flex;align-items:center;gap:16px;flex-wrap:wrap;justify-content:flex-end}
+  .kv{display:flex;align-items:baseline;gap:5px;white-space:nowrap}
+  .kv .k{color:var(--label-3);font-size:11px}
+  .kv .v{font-weight:600;font-size:12px}
+  .prog{width:170px;height:4px;border-radius:999px;background:var(--bg-elev);overflow:hidden}
+  .prog i{display:block;height:100%;background:var(--accent);transition:width .4s ease}
+  .dot{width:8px;height:8px;border-radius:999px;flex:none;display:inline-block}
+  .dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)}
+  .dot.err{background:var(--err)} .dot.mute{background:var(--label-3)}
+  .dot.live{background:var(--accent);animation:pulse 1.1s infinite}
+  .spark{display:block}
+  .scroll{flex:1;min-height:0;overflow:auto;padding:16px 18px 26px}
+  .scroll.tight{padding:0}
+  .errline{color:var(--err);font-size:11.5px;line-height:1.45}
+  .muted{color:var(--label-3)}
+  .artBox{position:relative;background:#fff;border-radius:var(--r-sm);overflow:hidden;border:1px solid var(--border-l1)}
+  .artBox .art{aspect-ratio:4/3}
+  .artBox .sc{position:absolute;right:6px;top:6px;box-shadow:0 1px 4px rgba(0,0,0,.25)}
+  .artBox.miss{background:var(--bg-elev);display:grid;place-items:center;color:var(--label-3);font-size:11.5px;text-align:center;padding:10px}
+  .capRow{display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:11px;color:var(--label-3);padding:5px 2px 0}
+  .capRow .mono{color:var(--label-2);font-size:11.5px}
+  .trend{font-size:11.5px;font-weight:600}
+  .trend.up{color:var(--ok)} .trend.down{color:var(--err)} .trend.flat{color:var(--label-3)}
+
+  /* 「整页」渲染模式：正式实现里这是 sandbox iframe，这里画出页面外框以示区别 */
+  .pageShell{border:1px solid var(--border-l2);border-radius:var(--r-md);overflow:hidden;background:var(--bg-card)}
+  .pageBar{display:flex;align-items:center;gap:6px;padding:5px 8px;background:var(--bg-elev);border-bottom:1px solid var(--border-l1);
+    font-family:var(--mono);font-size:10.5px;color:var(--label-3);white-space:nowrap;overflow:hidden}
+  .pageBar i{width:7px;height:7px;border-radius:999px;background:var(--border-l2);flex:none}
+  .pageShell .artBox{border:0;border-radius:0}
+
+  /* ── E 一屏看板：三列并排，一屏看完 ─────────────────────────────── */
+  .vE{flex:1;min-height:0;display:flex;flex-direction:column}
+  .vE .cols{flex:1;min-height:0;display:flex;gap:1px;background:var(--border-l1)}
+  .vE .colM{flex:1 1 0;min-width:0;background:var(--bg-panel);display:flex;flex-direction:column;
+    gap:11px;padding:15px 16px;overflow:auto}
+  .vE .cmTop{display:flex;align-items:center;gap:8px;min-width:0}
+  .vE .cmTop b{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .vE .cmTop .pill{margin-left:auto}
+  .vE .cmScore{display:flex;align-items:flex-end;gap:10px}
+  .vE .cmScore .n{font-family:var(--mono);font-size:40px;font-weight:700;line-height:.95;letter-spacing:-.02em}
+  .vE .cmScore .n small{font-size:12px;font-weight:600;color:var(--label-3);margin-left:2px}
+  .vE .cmScore .meta{margin-left:auto;text-align:right}
+  .vE .cmStats{display:flex;gap:14px;flex-wrap:wrap;border-top:1px solid var(--border-l1);padding-top:9px}
+  .vE .cmStrip{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}
+  .vE .cmStrip .artBox .sc{display:none}
+  .vE .cmStrip .st{font-size:10px;color:var(--label-3);text-align:center;margin-top:3px}
+
+  /* ── F 模型横幅：一个模型一条带，它的全部画作铺开 ───────────────── */
+  .vF{flex:1;min-height:0;display:flex;flex-direction:column}
+  .vF .band{display:grid;grid-template-columns:250px minmax(0,1fr);gap:18px;padding:16px;
+    border:1px solid var(--border-l1);border-radius:var(--r-md);background:var(--bg-panel);margin-bottom:14px}
+  .vF .bandLead{display:flex;flex-direction:column;gap:8px;min-width:0}
+  .vF .bandLead h3{margin:0;font-family:var(--mono);font-size:13px;font-weight:600;word-break:break-all}
+  .vF .bandLead .big{font-family:var(--mono);font-size:34px;font-weight:700;line-height:1}
+  .vF .bandLead .big small{font-size:11.5px;color:var(--label-3);font-weight:600}
+  .vF .bandArts{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;align-items:start}
+  .vF .bandArts .miss{aspect-ratio:4/3;border:1px dashed var(--border-l2);border-radius:var(--r-sm);display:grid;place-items:center;
+    color:var(--label-3);font-size:11.5px;text-align:center;padding:10px}
+
+  /* ── G 数据墙：全表 + 全墙，纯信息 ─────────────────────────────── */
+  .vG{flex:1;min-height:0;display:flex;flex-direction:column}
+  .vG .secT{display:flex;align-items:baseline;gap:10px;margin:0 0 9px}
+  .vG .secT h2{margin:0;font-size:13px;font-weight:700}
+  .vG .secT span{color:var(--label-3);font-size:11.5px}
+  .tbl{width:100%;border-collapse:collapse;font-size:12px}
+  .tbl th{position:sticky;top:0;z-index:1;background:var(--bg-panel);color:var(--label-3);font-size:10.5px;font-weight:700;
+    letter-spacing:.05em;text-transform:uppercase;text-align:right;padding:7px 10px;border-bottom:1px solid var(--border-l2);white-space:nowrap}
+  .tbl td{padding:7px 10px;border-bottom:1px solid var(--border-l1);text-align:right;white-space:nowrap}
+  .tbl th:first-child,.tbl th:nth-child(2),.tbl td:first-child,.tbl td:nth-child(2){text-align:left}
+  .tbl tbody tr:nth-child(even){background:color-mix(in srgb,var(--bg-elev) 45%,transparent)}
+  .tbl .fit{max-width:190px;overflow:hidden;text-overflow:ellipsis}
+  .vG .wall{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:12px}
+
+  /* ── H 轮次对比：一行一轮 ─────────────────────────────────────── */
+  .vH{flex:1;min-height:0;display:flex;flex-direction:column}
+  .vH .round{display:grid;grid-template-columns:132px minmax(0,1fr);gap:16px;padding:13px 16px;border-bottom:1px solid var(--border-l1)}
+  .vH .round:last-child{border-bottom:0}
+  .vH .roundLead .t{font-family:var(--mono);font-size:14px;font-weight:700}
+  .vH .roundLead .m{color:var(--label-3);font-size:11px;margin-top:4px;line-height:1.5}
+  .vH .cells{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+  .vH .cell{display:flex;flex-direction:column;gap:6px;min-width:0}
+  .vH .cell .nm{font-family:var(--mono);font-size:11px;color:var(--label-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .vH .cell .miss{aspect-ratio:4/3;border:1px dashed var(--border-l2);border-radius:var(--r-sm);display:grid;place-items:center;
+    color:var(--label-3);font-size:11.5px;text-align:center;padding:8px}
+  .vH .cell .line{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;color:var(--label-3)}
+</style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <i>◇</i><i class="on" title="鹈鹕监视">🚲</i><i>◎</i><i>☰</i><i>⚙</i>
+    </aside>
+    <aside class="side">
+      <h2>面板</h2>
+      <div class="item"><span class="dot">◇</span>会话</div>
+      <div class="item on"><span class="dot">🚲</span>鹈鹕监视</div>
+      <div class="item"><span class="dot">◇</span>技能控制台</div>
+      <div class="item"><span class="dot">◇</span>技能同步</div>
+      <div class="item"><span class="dot">◇</span>会话清理</div>
+    </aside>
+    <main class="main"><div class="stage" id="stage"></div></main>
+  </div>
+
+  <div class="switcher" id="switcher">
+    <button class="arrow" data-act="prev" title="上一个方案（←）">‹</button>
+    <div class="label" id="swLabel"></div>
+    <button class="arrow" data-act="next" title="下一个方案（→）">›</button>
+    <div class="sep"></div>
+    <div class="grp" id="swRender"><span class="t">渲染</span></div>
+    <div class="sep"></div>
+    <div class="grp" id="swTheme"><span class="t">主题</span></div>
+    <div class="sep"></div>
+    <div class="grp" id="swState"><span class="t">数据</span></div>
+    <div class="sep"></div>
+    <div class="note">原型预览 · 非产品界面</div>
+  </div>
+
+<script>
+/* ═══ mock 数据（真实 settings.json 的 3 个模型 + 实测耗时） ══════════════ */
+const PALETTES = [
+  ['#eef2ff','#4338ca','#f59e0b','#94a3b8','#fbbf24'],
+  ['#ecfeff','#0e7490','#fb7185','#a5b4fc','#f97316'],
+  ['#f5f3ff','#6d28d9','#22c55e','#f472b6','#facc15'],
+  ['#fff7ed','#c2410c','#0ea5e9','#a3a3a3','#4ade80'],
+];
+function art(seed){
+  const [sky,ink,acc,mute,acc2] = PALETTES[seed % PALETTES.length];
+  return `<svg viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg">
+    <rect width="400" height="300" fill="${sky}"/>
+    <circle cx="330" cy="56" r="26" fill="${acc}" opacity=".55"/>
+    <path d="M0 232h400" stroke="${mute}" stroke-width="2"/>
+    <g fill="none" stroke="${ink}" stroke-width="4" stroke-linecap="round">
+      <circle cx="128" cy="212" r="42"/><circle cx="286" cy="212" r="42"/>
+      <g stroke-width="2.4">
+        <path d="M128 170v84M86 212h84M98 182l60 60M158 182l-60 60"/>
+        <path d="M286 170v84M244 212h84M256 182l60 60M316 182l-60 60"/>
+      </g>
+      <path d="M128 212l54-62h62l42 62M182 150h-26M286 212l-40-70"/>
+      <path d="M148 132h40" stroke="${acc}" stroke-width="5"/>
+      <path d="M236 142h34" stroke="${acc}" stroke-width="5"/>
+    </g>
+    <g>
+      <ellipse cx="212" cy="118" rx="40" ry="30" fill="#fff" stroke="${ink}" stroke-width="3.5"/>
+      <path d="M240 104c30-4 56 2 74 12-20 12-48 14-76 6z" fill="${acc2}" stroke="${ink}" stroke-width="3"/>
+      <circle cx="246" cy="92" r="17" fill="#fff" stroke="${ink}" stroke-width="3.5"/>
+      <circle cx="252" cy="89" r="3" fill="${ink}"/>
+      <path d="M188 100c-16-14-34-16-48-6 12 16 32 22 50 14z" fill="#fff" stroke="${ink}" stroke-width="3"/>
+      <path d="M196 148l-14 34M228 148l14 34" stroke="${acc}" stroke-width="4" fill="none" stroke-linecap="round"/>
+    </g>
+  </svg>`;
+}
+
+/* 3 个模型：真实选中项。flash 慢而出图、vision-exp 快而稳、v4-flash 一直不返回 */
+const MODELS = [
+  { id:'deepseek-flash', provider:'taotoken', ok:true, runs:6, refusals:0, avgMs:125200,
+    latest:88, trend:-2, spark:[82,88,90,94,90,88], best:94, worst:82 },
+  { id:'deepseek-v4-flash-vision-exp', provider:'taotoken', ok:true, runs:6, refusals:0, avgMs:68100,
+    latest:94, trend:0, spark:[96,94,94,92,94,94], best:96, worst:92 },
+  { id:'deepseek-v4-flash', provider:'taotoken', ok:false, runs:6, refusals:6, avgMs:null,
+    latest:null, trend:0, spark:[], best:null, worst:null,
+    error:'超过 300 秒没有返回（可在插件配置里调大 timeoutSeconds）' },
+];
+
+/* 6 轮 × 2 个出图的模型 = 12 张（正好是 maxImages 上限） */
+const ROUNDS = [
+  { at:'13:22', label:'13:22' }, { at:'13:52', label:'13:52' }, { at:'14:22', label:'14:22' },
+  { at:'14:52', label:'14:52' }, { at:'15:22', label:'15:22' }, { at:'15:39', label:'15:39' },
+];
+const FLASH_SCORES  = [82,88,90,94,90,88];
+const FLASH_MS      = [118420,121090,120310,119915,128440,144984];
+const VISION_SCORES = [96,94,94,92,94,94];
+const VISION_MS     = [46980,68035,52110,48900,61240,132043];
+const SEEDS = [0,1,2,3,1,2];
+const FEATURES = ['svg','wheels','spokes','frame','handlebar','seat','pedals','pelican','wings','closed'];
+const DRAWS = [];
+ROUNDS.forEach((round, i) => {
+  DRAWS.push({ round:i, at:round.at, model:'deepseek-flash', score:FLASH_SCORES[i], ms:FLASH_MS[i],
+    seed:SEEDS[i], features:FEATURES.slice(0, 10 - (i % 3)), bytes:5479 + i * 61 });
+  DRAWS.push({ round:i, at:round.at, model:'deepseek-v4-flash-vision-exp', score:VISION_SCORES[i], ms:VISION_MS[i],
+    seed:SEEDS[(i + 2) % 6], features:FEATURES.slice(0, 8 + (i % 3)), bytes:6120 + i * 47 });
+});
+DRAWS.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+
+const RUNNING = { done:1, total:3, inflight:['deepseek-flash','deepseek-v4-flash'] };
+
+/* ═══ 状态 ══════════════════════════════════════════════════════════ */
+const VARIANTS = [
+  { id:'E', name:'一屏看板', note:'每模型一列，一屏不出滚动' },
+  { id:'F', name:'模型横幅', note:'一模型一条带，它的画全部铺开' },
+  { id:'G', name:'数据墙',   note:'全表 + 全墙，纯信息' },
+  { id:'H', name:'轮次对比', note:'一行一轮，同轮各模型并排' },
+];
+const RENDERS = [ { id:'svg', name:'SVG' }, { id:'page', name:'整页' } ];
+const THEMES = [ { id:'dark', name:'深' }, { id:'light', name:'浅' } ];
+const STATES = [ { id:'ready', name:'正常' }, { id:'running', name:'检测中' }, { id:'empty', name:'空' } ];
+const state = { variant:'E', render:'svg', theme:'dark', status:'ready' };
+
+/* ═══ 小工具 ════════════════════════════════════════════════════════ */
+const p2 = (n) => String(n).padStart(2, '0');
+function fmtMs(ms){ return ms == null ? '—' : ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's'; }
+function mmss(ms){ const t = Math.round(ms / 1000); return Math.floor(t / 60) + ':' + p2(t % 60); }
+function scoreColor(s){ return s == null ? 'var(--label-3)' : s >= 90 ? 'var(--ok)' : s >= 70 ? 'var(--warn)' : 'var(--err)'; }
+function scorePill(s){ return s == null ? 'mute' : s >= 90 ? 'ok' : s >= 70 ? 'warn' : 'err'; }
+function trendHtml(t){
+  if (!t) return '<span class="trend flat">→ 0</span>';
+  return `<span class="trend ${t > 0 ? 'up' : 'down'}">${t > 0 ? '↑ +' + t : '↓ ' + t}</span>`;
+}
+function sparkline(values, color, w = 96, h = 22){
+  if (!values || values.length < 2) return '<span class="muted" style="font-size:11px">还没有历史</span>';
+  const min = Math.min(...values), max = Math.max(...values), span = Math.max(1, max - min);
+  const pts = values.map((v, i) =>
+    `${(1 + (i / (values.length - 1)) * (w - 2)).toFixed(1)},${(h - 2 - ((v - min) / span) * (h - 4)).toFixed(1)}`).join(' ');
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true">
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/>
+  </svg>`;
+}
+/** 一张画：draw 为空时给「未出图」占位。render 模式决定要不要画页面外框 */
+function artOf(draw, opts = {}){
+  if (!draw) return `<div class="artBox miss">${opts.miss || '本轮未出图'}</div>`;
+  const badge = opts.badge === false ? '' :
+    `<span class="pill ${scorePill(draw.score)} sc">${draw.score}</span>`;
+  const inner = `<div class="artBox">${badge}<div class="art">${art(draw.seed)}</div></div>`;
+  if (state.render === 'page'){
+    return `<div class="pageShell"><div class="pageBar"><i></i><i></i><i></i>${draw.model}.html</div>${inner}</div>`;
+  }
+  return inner;
+}
+function capOf(draw){
+  return `<div class="capRow"><span class="mono">${draw.at}</span><span class="mono">${draw.score} 分 · ${fmtMs(draw.ms)}</span></div>`;
+}
+const modelOf = (id) => MODELS.find((m) => m.id === id);
+const drawsOf = (id) => DRAWS.filter((d) => d.model === id);
+const drawsInRound = (i, id) => DRAWS.find((d) => d.round === i && d.model === id);
+const avgOf = (arr) => arr.length === 0 ? null : Math.round(arr.reduce((a, b) => a + b, 0) / arr.length);
+function statusPill(m){
+  if (!m.ok) return `<span class="pill err" title="${m.error}">超时</span>`;
+  return `<span class="pill ok">正常</span>`;
+}
+function dotFor(m){
+  if (state.status === 'running' && RUNNING.inflight.includes(m.id)) return '<span class="dot live"></span>';
+  return `<span class="dot ${m.ok ? 'ok' : 'err'}"></span>`;
+}
+
+/* ═══ 共用顶栏：一眼看清「怎么跑、跑到哪」 ═════════════════════════ */
+function header(){
+  const running = state.status === 'running';
+  const right = running
+    ? `<div style="min-width:200px">
+         <div class="prog"><i style="width:${Math.round(RUNNING.done / RUNNING.total * 100)}%"></i></div>
+         <div class="kv" style="margin-top:6px"><span class="k">已完成</span><span class="v">${RUNNING.done}/${RUNNING.total}</span>
+           <span class="k">正在检测</span><span class="v">${RUNNING.inflight.map((m) => m.replace('deepseek-','')).join('、')}</span>
+           <span class="k">已等</span><span class="v">1:12</span><span class="k">上限</span><span class="v">5:00</span></div>
+       </div>`
+    : `<div class="kv"><span class="k">下次</span><span class="v">16:08</span></div>`;
+  return `<header class="pwHdr">
+    <div>
+      <h1>鹈鹕监视</h1>
+      <div class="sub">每 30 分钟一轮 · 并行 3 · 保留最新 12 张 · 已选 ${MODELS.length} 个模型 — 全部信息都在这一页，不需要点任何东西</div>
+    </div>
+    <div class="right">
+      <div class="kv"><span class="k">上一轮</span><span class="v">15:39</span></div>
+      <div class="kv"><span class="k">出图</span><span class="v">${DRAWS.length} 张</span></div>
+      ${right}
+    </div>
+  </header>`;
+}
+
+/* ═══ E：一屏看板 ══════════════════════════════════════════════════ */
+function VariantE(){
+  const cols = MODELS.map((m) => {
+    const mine = drawsOf(m.id);
+    const strip = mine.slice(0, 5).map((d) => `<div>${artOf(d, { badge:false })}<div class="st">${d.at} · ${d.score}</div></div>`).join('');
+    const score = m.latest == null
+      ? `<div class="n muted">—</div>`
+      : `<div class="n" style="color:${scoreColor(m.latest)}">${m.latest}<small>/100</small></div>`;
+    return `<section class="colM">
+      <div class="cmTop">${dotFor(m)}<b class="mono" title="${m.id}">${m.id}</b>${statusPill(m)}</div>
+      <div class="cmScore">
+        ${score}
+        <div class="meta">${trendHtml(m.trend)}<div class="muted" style="font-size:11px;margin-top:3px">相对自己历史</div></div>
+      </div>
+      ${sparkline(m.spark, scoreColor(m.latest))}
+      <div class="cmStats">
+        <div class="kv"><span class="k">跑过</span><span class="v">${m.runs} 次</span></div>
+        <div class="kv"><span class="k">均耗时</span><span class="v">${m.avgMs ? fmtMs(m.avgMs) : '—'}</span></div>
+        <div class="kv"><span class="k">没出图</span><span class="v" style="${m.refusals ? 'color:var(--err)' : ''}">${m.refusals} 次</span></div>
+        <div class="kv"><span class="k">最好/最差</span><span class="v">${m.best ?? '—'} / ${m.worst ?? '—'}</span></div>
+      </div>
+      ${m.ok ? '' : `<div class="errline">${m.error}</div>`}
+      <div style="margin-top:auto">
+        <div class="capRow" style="padding-bottom:5px"><span>最新一张</span><span class="mono">${mine[0] ? mine[0].at : '—'}</span></div>
+        ${artOf(mine[0] || null, { miss: `本轮未出图<br>${m.error || ''}` })}
+        ${mine[0] ? capOf(mine[0]) : ''}
+        <div class="capRow" style="padding-bottom:5px"><span>最近 5 张</span><span class="mono">全部 ${mine.length} 张</span></div>
+        <div class="cmStrip">${strip}</div>
+      </div>
+    </section>`;
+  }).join('');
+  return `<div class="vE">${header()}<div class="cols">${cols}</div></div>`;
+}
+
+/* ═══ F：模型横幅 ══════════════════════════════════════════════════ */
+function VariantF(){
+  const bands = MODELS.map((m) => {
+    const mine = drawsOf(m.id);
+    const arts = mine.length === 0
+      ? `<div class="miss">这个模型到现在一张都没画出来（${m.refusals} 次尝试）<br>${m.error || ''}</div>`
+      : mine.map((d) => `<div>${artOf(d)}${capOf(d)}</div>`).join('');
+    return `<section class="band">
+      <div class="bandLead">
+        <div class="cmTop" style="display:flex;align-items:center;gap:8px">${dotFor(m)}${statusPill(m)}</div>
+        <h3>${m.id}</h3>
+        <div class="big" style="color:${scoreColor(m.latest)}">${m.latest ?? '—'}<small>${m.latest == null ? '' : ' /100'}</small> ${trendHtml(m.trend)}</div>
+        ${sparkline(m.spark, scoreColor(m.latest), 210, 30)}
+        <div class="muted" style="font-size:11.5px;line-height:1.7">
+          ${m.runs} 次检测 · 均耗时 ${m.avgMs ? fmtMs(m.avgMs) : '—'}<br>
+          最好 ${m.best ?? '—'} · 最差 ${m.worst ?? '—'} · 没出图 ${m.refusals} 次
+        </div>
+        ${m.ok ? '' : `<div class="errline">${m.error}</div>`}
+      </div>
+      <div class="bandArts">${arts}</div>
+    </section>`;
+  }).join('');
+  return `<div class="vF">${header()}<div class="scroll">
+    <div class="secT"><h2>每个模型的全部画作</h2><span>按时间从新到旧 · 共 ${DRAWS.length} 张</span></div>
+    ${bands}
+  </div></div>`;
+}
+
+/* ═══ G：数据墙 ════════════════════════════════════════════════════ */
+function VariantG(){
+  const rows = DRAWS.map((d, i) => `<tr>
+    <td class="mono">${d.at}</td>
+    <td class="mono">${d.model}</td>
+    <td style="color:${scoreColor(d.score)};font-weight:700;font-family:var(--mono)">${d.score}</td>
+    <td class="mono">${fmtMs(d.ms)}</td>
+    <td class="mono">${d.features.length}/10</td>
+    <td class="mono">${(d.bytes / 1024).toFixed(1)} KB</td>
+    <td class="fit muted" style="text-align:left">${d.features.join(' ')}</td>
+  </tr>`).join('');
+  const fails = MODELS.filter((m) => !m.ok).map((m) => `<tr>
+    <td class="mono">15:39</td><td class="mono">${m.id}</td><td class="muted">—</td><td class="muted">${m.refusals} 次失败</td>
+    <td class="muted">0/10</td><td class="muted">—</td>
+    <td class="errline" style="text-align:left">${m.error}</td>
+  </tr>`).join('');
+  const wall = DRAWS.map((d) => `<div>${artOf(d)}${capOf(d)}</div>`).join('');
+  return `<div class="vG">${header()}<div class="scroll tight">
+    <div style="padding:16px 18px 8px">
+      <div class="secT"><h2>每一次检测</h2><span>${DRAWS.length} 张画 + ${MODELS.filter((m) => !m.ok).length} 条失败记录 · 按时间从新到旧</span></div>
+      <table class="tbl">
+        <thead><tr>
+          <th>时间</th><th>模型</th><th>分数</th><th>耗时</th><th>结构</th><th>大小</th><th style="text-align:left">命中的结构</th>
+        </tr></thead>
+        <tbody>${fails}${rows}</tbody>
+      </table>
+    </div>
+    <div style="padding:10px 18px 24px">
+      <div class="secT"><h2>全部画作</h2><span>同一页铺开，从新到旧</span></div>
+      <div class="wall">${wall}</div>
+    </div>
+  </div></div>`;
+}
+
+/* ═══ H：轮次对比 ══════════════════════════════════════════════════ */
+function VariantH(){
+  const rounds = ROUNDS.map((round, i) => {
+    const cells = MODELS.map((m) => {
+      const d = drawsInRound(i, m.id);
+      if (!d) return `<div class="cell"><span class="nm" title="${m.id}">${m.id}</span>
+        <div class="miss">本轮未出图${m.error ? '<br>' + m.error : ''}</div>
+        <div class="line"><span class="errline">超时</span><span>—</span></div></div>`;
+      return `<div class="cell"><span class="nm" title="${m.id}">${m.id}</span>
+        ${artOf(d)}
+        <div class="line"><span style="color:${scoreColor(d.score)};font-weight:700">${d.score} 分</span><span>${fmtMs(d.ms)}</span></div></div>`;
+    }).join('');
+    const scores = MODELS.map((m) => drawsInRound(i, m.id)).filter(Boolean).map((d) => d.score);
+    return `<section class="round">
+      <div class="roundLead">
+        <div class="t">${round.label}</div>
+        <div class="m">第 ${i + 1} 轮 / 共 ${ROUNDS.length} 轮<br>本轮平均 ${avgOf(scores)} 分<br>${scores.length}/${MODELS.length} 个模型出图</div>
+      </div>
+      <div class="cells">${cells}</div>
+    </section>`;
+  }).join('');
+  return `<div class="vH">${header()}<div class="scroll tight">
+    <div class="secT" style="padding:16px 18px 0"><h2>一轮一行：同轮各模型并排</h2><span>从上到下 = 时间从新到旧，直接看谁在降智</span></div>
+    ${rounds}
+  </div></div>`;
+}
+
+/* ═══ 空 / 检测中 ══════════════════════════════════════════════════ */
+function emptyState(){
+  // 空态也留在当前方案自己的骨架里：四个平铺结构都要能优雅地显示「还没画」
+  return `<div class="v${state.variant}">${header()}<div class="empty">
+    <div class="g">🦩</div>
+    <b>还没有画</b>
+    调度器每 30 分钟自动画一轮，画完会直接出现在这一页（不需要点任何东西）<br>
+    想立刻看，就在设置里点一次「全部检测一遍」。
+  </div></div>`;
+}
+
+/* ═══ 渲染 ═════════════════════════════════════════════════════════ */
+function render(){
+  document.documentElement.dataset.theme = state.theme;
+  const stage = document.getElementById('stage');
+  if (state.status === 'empty'){
+    stage.innerHTML = emptyState();
+  } else if (state.variant === 'E') stage.innerHTML = VariantE();
+  else if (state.variant === 'F') stage.innerHTML = VariantF();
+  else if (state.variant === 'G') stage.innerHTML = VariantG();
+  else stage.innerHTML = VariantH();
+  renderSwitcher();
+}
+function optGroup(el, list, current, key){
+  el.querySelectorAll('.opt').forEach((n) => n.remove());
+  list.forEach((o) => {
+    const b = document.createElement('button');
+    b.className = 'opt' + (o.id === current ? ' on' : '');
+    b.textContent = o.name;
+    b.dataset.set = key;
+    b.dataset.val = o.id;
+    el.appendChild(b);
+  });
+}
+function renderSwitcher(){
+  const v = VARIANTS.find((x) => x.id === state.variant);
+  document.getElementById('swLabel').innerHTML = `<b>${v.id} ${v.name}</b><span>${v.note}</span>`;
+  optGroup(document.getElementById('swRender'), RENDERS, state.render, 'render');
+  optGroup(document.getElementById('swTheme'), THEMES, state.theme, 'theme');
+  optGroup(document.getElementById('swState'), STATES, state.status, 'status');
+}
+function syncUrl(){
+  const q = new URLSearchParams({ variant:state.variant, render:state.render, theme:state.theme, state:state.status });
+  history.replaceState(null, '', location.pathname + '?' + q.toString());
+}
+function applyUrl(){
+  const q = new URLSearchParams(location.search);
+  if (VARIANTS.some((v) => v.id === q.get('variant'))) state.variant = q.get('variant');
+  if (RENDERS.some((r) => r.id === q.get('render'))) state.render = q.get('render');
+  if (THEMES.some((t) => t.id === q.get('theme'))) state.theme = q.get('theme');
+  if (STATES.some((s) => s.id === q.get('state'))) state.status = q.get('state');
+}
+function step(delta){
+  const i = VARIANTS.findIndex((v) => v.id === state.variant);
+  state.variant = VARIANTS[(i + delta + VARIANTS.length) % VARIANTS.length].id;
+  render(); syncUrl();
+}
+document.addEventListener('click', (e) => {
+  const act = e.target.closest('[data-act]');
+  if (act){ step(act.dataset.act === 'next' ? 1 : -1); return; }
+  const set = e.target.closest('[data-set]');
+  if (set){
+    state[set.dataset.set === 'status' ? 'status' : set.dataset.set] = set.dataset.val;
+    render(); syncUrl();
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowLeft') step(-1);
+  else if (e.key === 'ArrowRight') step(1);
+  else if (['1','2','3','4'].includes(e.key)){
+    state.variant = VARIANTS[Number(e.key) - 1].id; render(); syncUrl();
+  }
+});
+window.addEventListener('popstate', () => { applyUrl(); render(); });
+
+applyUrl();
+render();
+
+/* 原型专用：给冒烟测试读状态与产物（正式实现里没有这个钩子） */
+window.__proto = { state, render, VARIANTS, RENDERS, THEMES, STATES, MODELS, DRAWS, ROUNDS, art, artOf, VariantE, VariantF, VariantG, VariantH, emptyState, header, sparkline, fmtMs, mmss, scoreColor };
+</script>
+</body>
+</html>
