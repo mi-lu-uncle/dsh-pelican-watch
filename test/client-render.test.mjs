@@ -57,6 +57,8 @@ function render(node) {
   if (props.className) attrs.push(`class="${props.className}"`);
   if (typeof props.title === 'string') attrs.push(`title="${props.title}"`);
   if (typeof props.src === 'string') attrs.push(`src="${props.src}"`);
+  if (props.disabled) attrs.push('disabled');
+  if (props.value !== undefined) attrs.push(`value="${props.value}"`);
   return `<${type}${attrs.length ? ' ' + attrs.join(' ') : ''}>${children}</${type}>`;
 }
 
@@ -205,6 +207,55 @@ async function mount(component, props) {
   assert.ok(out.includes('没出图'), 'status reads “no drawing”, not “ok” (the error map is empty after a restart)');
   assert.ok(!out.includes('>正常<'), 'no green status for a model with zero drawings');
   assert.ok(out.includes('没出图 6 次'), 'the refusal count is shown');
+}
+
+// ── 6. the pace controls live on the settings side only ────────────────────
+// Probe passes cost tokens, so pausing the schedule and cutting off a running
+// pass have to be reachable — without putting a button back on the board.
+{
+  payload = basePayload;
+  const out = await mount(settingsSlot, {});
+  assert.ok(out.includes('检测节奏'), 'the pace strip is on the settings side');
+  assert.ok(out.includes('暂停自动检测'), 'auto probing can be paused');
+  assert.ok(out.includes('保存间隔') && out.includes('停止本轮'), 'interval save and stop are offered');
+  assert.ok(out.includes('间隔') && out.includes('value="30"'), 'the interval input shows the host value');
+  assert.ok(/<button[^>]*disabled[^>]*>停止本轮/.test(out), '“stop this pass” is disabled while nothing runs');
+  assert.ok(out.includes('自动检测开着') || out.includes('下次'), 'the strip reports the schedule state');
+}
+
+// ── 7. paused: the board says so, still with nothing to click ─────────────
+{
+  payload = { ...basePayload, autoEnabled: false, nextRunAt: null };
+  const out = await mount(mainSlot, {});
+  assert.ok(out.includes('自动检测已暂停'), 'the read-only board shows that probing is paused');
+  assert.ok(out.includes('在「设置 → 鹈鹕监视」里恢复'), 'and where to turn it back on');
+  assert.equal(seen.onclick, 0, 'a paused board is still click-free');
+  const settings = await mount(settingsSlot, {});
+  assert.ok(settings.includes('恢复自动检测'), 'settings offers to resume');
+  assert.ok(settings.includes('不会再消耗 token'), 'and says what pausing means for the bill');
+}
+
+// ── 8. stopping a pass is visible while it happens ────────────────────────
+{
+  payload = { ...basePayload, running: true, stopping: true, done: 1, total: 3, inflight: ['deepseek-flash'] };
+  const out = await mount(settingsSlot, {});
+  assert.ok(out.includes('正在停止'), 'the progress line says it is stopping');
+  assert.ok(!out.includes('正在检测 deepseek-flash'), 'and stops naming models as “probing”');
+  assert.ok(!/<button[^>]*disabled[^>]*>停止本轮/.test(out), '“stop this pass” is live while a pass runs');
+}
+
+// ── 9. a model the user cut off is not reported as a timeout ──────────────
+{
+  payload = {
+    ...basePayload,
+    stopped: ['deepseek-v4-flash'],
+    errors: { 'deepseek-v4-flash': '已手动停止（本轮检测被中断）' },
+  };
+  const out = await mount(mainSlot, {});
+  assert.ok(out.includes('>已停止<'), 'the band says stopped');
+  assert.ok(!out.includes('>超时<'), 'and not “timeout”');
+  assert.ok(out.includes('已手动停止'), 'while still showing why');
+  assert.equal(seen.onclick, 0, 'a stopped board is still click-free');
 }
 
 console.log('pelican client render: OK');

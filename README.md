@@ -27,6 +27,12 @@ models**:
 - **Actions live in Settings** — picking models, probing right now and opening one
   drawing's original page all sit under Settings → Pelican Watch; the main board
   stays pure viewing.
+- **Stop it, retune it** — Settings → Pelican Watch can **pause / resume automatic
+  probing**, change the **interval** (1–1440 minutes), and **stop the pass that is
+  running right now**: requests in flight are aborted, models that had not started
+  are skipped without a request being sent. Pausing is written to
+  `settings.json` immediately and survives a restart, so a plugin you only probe
+  by hand never costs a token on its own.
 - **Bounded history** — keeps the newest N drawings (12 by default), pruning
   older ones automatically. Same prompt, same model, over days: degradation
   shows up as worse structure, refusals (saved and badged 「未检出 SVG」), or
@@ -58,6 +64,14 @@ cycle on each selected model draws its own picture and gets its own row on the
 IQ board.
 
 That selection lives in `dir/settings.json` and is what the scheduler uses;
+`config.model` / `config.targets` only seed the first run. The same file holds
+two knobs that decide what you spend, both changeable from Settings → Pelican
+Watch without touching any config file:
+
+| key | default | meaning |
+| --- | --- | --- |
+| `autoEnabled` | `true` | Off disarms the timer at once (`nextRunAt` goes empty); only the manual “probe now” then spends anything, and the choice survives a restart. |
+| `intervalMinutes` | follows `config.intervalMinutes` (30) | Changing it in the panel re-arms the countdown immediately — no restart. |
 `config.model` / `config.targets` only seed the very first run. At most 12
 models are probed per cycle — `concurrency` of them at the same time (3 by
 default), one drawing each.
@@ -149,7 +163,7 @@ Drawings live in `dir` (default `~/.dsh/pelican-watch`):
 |---|---|
 | `<时间>_<模型>.html` | The full generated page; first line is a meta comment (model, provider, time, duration, whether an SVG was detected) |
 | `<时间>_<模型>.svg` | The extracted inline SVG, used for the panel's `<img>` preview |
-| `settings.json` | The selected probe targets (written by the picker) |
+| `settings.json` | The selected probe targets (written by the picker) plus the two pace knobs `autoEnabled` / `intervalMinutes` |
 
 Deleting files there is safe; the panel always lists what is on disk.
 

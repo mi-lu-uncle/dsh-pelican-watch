@@ -22,6 +22,7 @@ import {
   normalizeTargets,
   loadSettings,
   saveSettings,
+  STOPPED_MESSAGE,
   PROMPT,
 } from '../lib/index.js';
 
@@ -526,6 +527,145 @@ assert.deepEqual(loadSettings(path.join(tmp, 'no-settings')), {}, 'missing setti
   }
   assert.ok(offsets[0] >= 0 && offsets[0] < 60_000, `default arms the boot round soon (${offsets[0]}ms)`);
   assert.ok(offsets[1] > 25 * 60_000, `runOnStart:false waits for the interval instead (${Math.round(offsets[1] / 60000)}min)`);
+}
+
+// ---- schedule control: pause, retune the interval, stop a pass ----
+// Probing costs tokens, so "stop" has to mean something concrete: the timer is
+// disarmed at once, the in-flight request is aborted, and models that had not
+// started yet are skipped without a single request being sent.
+{
+  const localRoutes = {};
+  const localDisposes = [];
+  const scheduleDir = path.join(tmp, 'schedule');
+  const requests = [];
+  let hanging = false;
+  globalThis.fetch = (url, init = {}) => {
+    requests.push(String(url));
+    if (!hanging) {
+      return Promise.resolve({ ok: true, status: 200, text: async () => '', json: async () => ({ choices: [{ message: { content: PAGE } }] }) });
+    }
+    return new Promise((resolve, reject) => {
+      const signal = init.signal;
+      const fail = () => { const error = new Error('aborted'); error.name = 'AbortError'; reject(error); };
+      if (signal && signal.aborted) return fail();
+      if (signal) signal.addEventListener('abort', fail, { once: true });
+      return undefined;
+    });
+  };
+  const reqBody = (method, url, payload) => ({
+    method, url, headers: { 'sec-fetch-site': 'same-origin' },
+    async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(payload)); },
+  });
+  const req = (method, url) => ({ method, url, headers: { 'sec-fetch-site': 'same-origin' }, async *[Symbol.asyncIterator]() {} });
+  const fakeRes = () => {
+    const r = { code: 0, headers: {}, body: '' };
+    r.writeHead = (code, headers) => { r.code = code; Object.assign(r.headers, headers); };
+    r.end = (body) => { r.body = body; };
+    return r;
+  };
+  const mount = (routes) => apply({
+    effect: (fn) => { const d = fn(); if (typeof d === 'function') localDisposes.push(d); return d; },
+    webServer: { register: (r) => { routes[r.path] = r; return () => delete routes[r.path]; } },
+  }, {
+    dir: scheduleDir,
+    model: 'm-a',
+    apiKey: 'sk-test',
+    baseURL: 'http://fake.local/v1',
+    intervalMinutes: 30,
+    concurrency: 1,
+    runOnStart: false,
+    credentialsFile: path.join(tmp, 'none.yaml'),
+    targets: [
+      { provider: 'p', baseURL: 'http://fake.local/v1', apiKeyEnv: 'K', apiKey: 'sk-a', model: 'm-a' },
+      { provider: 'p', baseURL: 'http://fake.local/v1', apiKeyEnv: 'K', apiKey: 'sk-a', model: 'm-b' },
+    ],
+  });
+  const list = async (routes) => {
+    const res = fakeRes();
+    await routes['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), res);
+    return JSON.parse(res.body);
+  };
+  const post = async (routes, routePath, payload) => {
+    const res = fakeRes();
+    await routes[routePath].handler(reqBody('POST', routePath, payload), res);
+    return { code: res.code, body: JSON.parse(res.body) };
+  };
+
+  mount(localRoutes);
+  const booted = await list(localRoutes);
+  assert.equal(booted.autoEnabled, true, 'auto probing is on by default');
+  assert.equal(booted.intervalMinutes, 30, 'the config interval is reported');
+
+  // pause: the pending timer is dropped immediately, not after it fires
+  const paused = await post(localRoutes, '/api/pelican-watch/schedule', { autoEnabled: false });
+  assert.equal(paused.code, 200);
+  assert.equal(paused.body.autoEnabled, false);
+  assert.equal(paused.body.nextRunAt, null, 'pausing disarms the timer at once');
+  assert.equal((await list(localRoutes)).nextRunAt, null, 'and it stays disarmed');
+
+  // interval: accepted, reported, clamped, persisted
+  const retuned = await post(localRoutes, '/api/pelican-watch/schedule', { intervalMinutes: 5 });
+  assert.equal(retuned.body.intervalMinutes, 5);
+  assert.equal((await list(localRoutes)).intervalMinutes, 5);
+  for (const bad of [0, -3, 1441, 'abc']) {
+    const res = await post(localRoutes, '/api/pelican-watch/schedule', { intervalMinutes: bad });
+    assert.equal(res.code, 400, `interval ${bad} is rejected`);
+  }
+  assert.equal((await post(localRoutes, '/api/pelican-watch/schedule', {})).code, 400, 'an empty patch is rejected');
+  assert.equal((await list(localRoutes)).intervalMinutes, 5, 'a rejected value never mutated the live interval');
+
+  // resume, then stop a pass that is stuck on a hanging request
+  await post(localRoutes, '/api/pelican-watch/schedule', { autoEnabled: true });
+  assert.ok((await list(localRoutes)).nextRunAt > Date.now(), 'resuming arms the timer again');
+  await post(localRoutes, '/api/pelican-watch/schedule', { autoEnabled: false });
+
+  hanging = true;
+  requests.length = 0;
+  const started = await post(localRoutes, '/api/pelican-watch/run', {});
+  assert.equal(started.body.started, true, 'the manual probe is allowed while the timer is paused');
+  await new Promise((r) => setTimeout(r, 40));
+  const during = await list(localRoutes);
+  assert.equal(during.running, true, 'the pass is in flight');
+  assert.equal(requests.length, 1, 'concurrency 1 → exactly one request out');
+  assert.equal(during.nextRunAt, null, 'a paused schedule does not re-arm after a manual pass');
+
+  const stopped = await post(localRoutes, '/api/pelican-watch/stop', {});
+  assert.equal(stopped.body.stopped, true, 'the stop hit a running pass');
+  await new Promise((r) => setTimeout(r, 60));
+  const after = await list(localRoutes);
+  assert.equal(after.running, false, 'the pass ended on the stop');
+  assert.equal(requests.length, 1, 'the model that had not started was never asked — no tokens spent');
+  assert.equal(after.errors['m-a'], STOPPED_MESSAGE, 'the aborted model reports a stop, not a timeout');
+  assert.equal(after.errors['m-b'], STOPPED_MESSAGE, 'the skipped model is marked stopped too');
+  assert.deepEqual(after.stopped, ['m-a', 'm-b'], 'and they are listed as stopped, not as timed out');
+  assert.equal((await post(localRoutes, '/api/pelican-watch/stop', {})).body.stopped, false, 'stopping an idle plugin is a no-op');
+
+  // a later pass that is allowed to finish clears the stopped note
+  hanging = false;
+  await post(localRoutes, '/api/pelican-watch/run', {});
+  await new Promise((r) => setTimeout(r, 80));
+  const recovered = await list(localRoutes);
+  assert.deepEqual(recovered.stopped, [], 'a finished pass clears the stopped list');
+  assert.deepEqual(recovered.errors, {}, 'and the per-model errors');
+
+  // one settings file: saving a selection must not wipe the schedule knobs
+  await post(localRoutes, '/api/pelican-watch/targets', {
+    targets: [{ provider: 'p', baseURL: 'http://fake.local/v1', apiKeyEnv: 'K', model: 'm-a' }],
+  });
+  const kept = loadSettings(scheduleDir);
+  assert.equal(kept.autoEnabled, false, 'saving targets kept autoEnabled');
+  assert.equal(kept.intervalMinutes, 5, 'saving targets kept intervalMinutes');
+  assert.equal(kept.targets[0].model, 'm-a');
+  assert.equal(kept.targets.length, 1, 'the selection itself was replaced, not appended');
+
+  // and both knobs survive a restart
+  for (const d of localDisposes.splice(0)) { try { d(); } catch { /* ignore */ } }
+  const routes3 = {};
+  mount(routes3);
+  const reborn = await list(routes3);
+  assert.equal(reborn.autoEnabled, false, 'the pause survived a restart');
+  assert.equal(reborn.intervalMinutes, 5, 'the interval survived a restart');
+  for (const d of localDisposes.splice(0)) { try { d(); } catch { /* ignore */ } }
 }
 
 // ---- client entry contract: BOTH apply and inject must be exported ----

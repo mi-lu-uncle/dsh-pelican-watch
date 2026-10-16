@@ -1,7 +1,7 @@
 {
   "name": "@mi-lu-uncle/dsh-pelican-watch",
-  "version": "0.4.0",
-  "description": "DSH community plugin: probe any set of models — each asked to draw an SVG 'pelican riding a bicycle' on a fixed interval — with a per-model score, trend and every drawing laid out on a read-only board. A long-running model-quality (降智) probe.",
+  "version": "0.5.0",
+  "description": "DSH community plugin: probe any set of models — each asked to draw an SVG 'pelican riding a bicycle' on a fixed interval — with a per-model score, trend and every drawing laid out on a read-only board. Pausable, with a settable interval and a stop for the pass in flight. A long-running model-quality (降智) probe.",
   "author": "milu",
   "repository": "https://github.com/mi-lu-uncle/dsh-pelican-watch",
   "keywords": [
