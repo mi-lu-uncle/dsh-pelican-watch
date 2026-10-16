@@ -1,3 +1,6 @@
 node_modules/
 *.log
 .DS_Store
+
+# Throwaway UI prototypes (archived on branch prototype/pelican-panel-ui)
+prototype/

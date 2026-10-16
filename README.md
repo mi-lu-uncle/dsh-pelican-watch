@@ -16,9 +16,12 @@ models**:
 - **No skills, no tools** — each run is a bare `chat/completions` request with
   no tool definitions and no agent loop, so the result measures the model
   alone, never your local skills.
-- **Per-model IQ board** — every model gets a 0-100 structural score for its
-  newest drawing, the trend against its own history, the run count, the average
-  duration and how often it failed to produce a drawing.
+- **Per-model IQ leaderboard** — a ranking table of every probed model: 0-100
+  structural score of its newest drawing, the trend against its own history (with
+  a sparkline), run count, average duration and failure count. Collapsible.
+- **Latest-drawing hero** — the newest drawing is shown large with its score
+  overlaid, with the latest few stacked beside it; a compact model rail on the
+  left filters the hero, the leaderboard and the gallery at once.
 - **Gallery** — every saved drawing with an inline preview; click a card for a
   sandboxed full-page viewer with model / time / duration / score.
 - **Bounded history** — keeps the newest N drawings (12 by default), pruning
@@ -160,7 +163,7 @@ Deleting files there is safe; the panel always lists what is on disk.
 | File | Role |
 |---|---|
 | `lib/index.js` | Host half: multi-model scheduler, storage, scoring, `/api/pelican-watch/*` routes |
-| `lib/client.js` | Client half: the model picker, IQ board and gallery (React） |
+| `lib/client.js` | Client half: model rail + latest-drawing hero + IQ leaderboard + gallery (React) |
 | `cordis.patch.yml` | Bundle patch that mounts the package as one host row |
 | `package.json` | npm metadata + `dsh.bundle`/`dsh.client`/`dsh.compatibility` |
 | `test/pelican.test.mjs` | Offline test: rubric, per-model roll-up, provider parsing, target selection, route wiring |

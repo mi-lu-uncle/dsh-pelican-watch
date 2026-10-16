@@ -315,6 +315,8 @@ assert.equal(summary[0].trend, 15, 'trend = latest vs the average of the older r
 assert.equal(summary[0].avgMs, 2000);
 assert.equal(summary[0].refusals, 1);
 assert.equal(summary[1].trend, 0, 'a single run has no trend');
+assert.deepEqual(summary[0].scores, [70, 80, 90], 'sparkline series is oldest → newest');
+assert.deepEqual(summary[1].scores, [40]);
 assert.deepEqual(summarizeRuns([]), []);
 
 // ---- provider discovery out of a profile patch layer ----
@@ -508,6 +510,38 @@ assert.deepEqual(loadSettings(path.join(tmp, 'no-settings')), {}, 'missing setti
   assert.ok(Array.isArray(clientExports.inject), 'client must export inject');
   assert.ok(clientExports.inject.includes('slots') && clientExports.inject.includes('locale'),
     'inject must declare the services apply uses');
+}
+
+// ---- client source lint: dictionaries, inline styles and CSS classes ----
+// The panel is plain createElement + inline styles plus one injected
+// stylesheet, so typos are invisible until runtime. Check the source instead:
+// every t("key") resolves, zh/en stay in sync with no dead entries, every
+// s.someStyle exists, and every className has a rule in the sheet.
+{
+  const source = fs.readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
+  const blockKeys = (from, to) => {
+    const block = source.slice(source.indexOf(from), source.indexOf(to));
+    return new Set([...block.matchAll(/^ {6}([A-Za-z][A-Za-z0-9]*):/gm)].map((m) => m[1]));
+  };
+  const zhKeys = blockKeys('const zh = {', 'const en = {');
+  const enKeys = blockKeys('const en = {', '// ── styles');
+  const usedKeys = new Set([...source.matchAll(/\bt\("([A-Za-z][A-Za-z0-9]*)"\)/g)].map((m) => m[1]));
+  const styleKeys = blockKeys('const s = {', '// ── helpers');
+  const usedStyles = new Set([...source.matchAll(/\bs\.([A-Za-z][A-Za-z0-9]*)/g)].map((m) => m[1]));
+
+  assert.deepEqual([...usedKeys].filter((k) => !zhKeys.has(k)), [], 'every t() key has a translation');
+  assert.deepEqual([...zhKeys].filter((k) => !enKeys.has(k)), [], 'zh keys are all translated to en');
+  assert.deepEqual([...enKeys].filter((k) => !zhKeys.has(k)), [], 'no extra en keys');
+  assert.deepEqual([...zhKeys].filter((k) => !usedKeys.has(k)), [], 'no dead translation keys');
+  assert.deepEqual([...usedStyles].filter((k) => !styleKeys.has(k)), [], 'every s.x style is defined');
+  assert.deepEqual([...styleKeys].filter((k) => !usedStyles.has(k)), [], 'no dead style objects');
+
+  const sheet = source.slice(source.indexOf('const STYLESHEET ='), source.indexOf('const NS ='));
+  const cssClasses = new Set([...sheet.matchAll(/\.([a-z][a-z0-9-]*)/g)].map((m) => m[1]));
+  const jsClasses = new Set();
+  for (const m of source.matchAll(/className:\s*"([^"]+)"/g)) for (const c of m[1].split(/\s+/)) if (c) jsClasses.add(c);
+  assert.ok(jsClasses.size >= 4, 'the panel still uses the class-based rules');
+  assert.deepEqual([...jsClasses].filter((c) => !cssClasses.has(c)), [], 'every className has a CSS rule');
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });
