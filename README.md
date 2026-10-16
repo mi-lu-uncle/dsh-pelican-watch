@@ -17,10 +17,10 @@ models**:
   no tool definitions and no agent loop, so the result measures the model
   alone, never your local skills.
 - **Everything flat, nothing to click** — the main board is read-only: one band
-  per model, its whole metric block on the left (newest score and trend, a
-  sparkline, runs / average duration / best & worst / failed attempts, and the
-  failure reason) and every drawing it ever made on the right, all laid out at
-  once — nothing collapsed, filtered, or hidden behind a click.
+  per model, its status and figures on the left (when its newest drawing landed,
+  runs, average duration, how many came back without a drawing, and the failure
+  reason) and every drawing it ever made on the right, all laid out at once —
+  nothing collapsed, filtered, or hidden behind a click.
 - **Run state in the header** — while probing: “n/m done”, which models are in
   flight, how long the slowest has waited (m:ss) and the timeout cap (m:ss), so a
   slow model and a stuck one are told apart at a glance.
@@ -60,8 +60,8 @@ Note: `link:`-installed plugins are not watched by HMR, so editing
 「选择模型」 (under Settings → Pelican Watch) opens the picker: every provider found in your DSH profiles, with
 the models it serves (its own `/models` endpoint, merged with whatever the
 profile already lists). Tick any number of models and **Save** — from the next
-cycle on each selected model draws its own picture and gets its own row on the
-IQ board.
+cycle on each selected model draws its own picture and gets its own band on the
+board.
 
 That selection lives in `dir/settings.json` and is what the scheduler uses;
 `config.model` / `config.targets` only seed the first run. The same file holds
@@ -82,15 +82,15 @@ default), one drawing each.
   longer delays the others: every drawing is written to disk the moment it
   arrives and shows up in the panel within seconds.
 - **Each request has its own timeout** (`timeoutSeconds`, default 180). A model
-  that exceeds it is reported as `超过 N 秒没有返回` on its own IQ card instead of
+  that exceeds it is reported as `超过 N 秒没有返回` on its own band instead of
   hanging the whole pass. Reasoning models can genuinely be slow — measured
   against one provider: `qwen3.7-max` ~52s, `deepseek-flash` ~121s (15k of those
   completion tokens were reasoning), while `glm-5.3-flash` sometimes exceeded
   4 minutes.
-- **A timeout or HTTP error is not a drawing**: nothing is saved and no score is
-  recorded, because that is an infrastructure fact rather than model quality. A
-  model that *answers* without an SVG (a refusal) is saved and scored — that is
-  a real quality signal.
+- **A timeout or HTTP error is not a drawing**: nothing is saved and it does not
+  count as a drawing, because that is an infrastructure fact rather than model
+  behaviour. A model that *answers* without an SVG (a refusal) is saved and
+  marked `没出图` — that is the signal worth looking at.
 - `maxTokens` is not sent by default: reasoning models spend tens of thousands of
   completion tokens before they draw, and a tight ceiling would truncate the SVG
   instead of speeding anything up.
@@ -140,20 +140,22 @@ under the provider's `apiKeyEnv` name.
 With none of the three the run is skipped and the panel shows the reason
 (`缺少 API Key：…`) — set any one of them and the next scheduled run proceeds.
 
-## IQ score
+## Display only — no scoring
 
-Every drawing is scored 0-100 offline against a fixed rubric — the things the
-prompt actually asks for: an SVG at all (30), two wheels (10), spokes and
-similar line work (8), a frame (8), handlebar (6), seat (6), pedals (6), a
-pelican with beak/pouch (10), wings (6), a closed HTML page (6), a sane output
-size (4). The panel shows the newest score per model, the trend against that
-model's own previous runs, the run count, the average duration and the failure
-count.
+This plugin **does not score anything**. It does two things: it asks every model
+the same drawing prompt on a schedule, and it lays the drawings out as they are.
 
-It is a **heuristic proxy, not a benchmark**: a model can score 100 with an ugly
-drawing, and the numbers only mean something compared against the same model
-over time. The rubric is plain code (`SCORE_FEATURES` in `lib/index.js`) and is
-easy to tune.
+Earlier versions computed a 0-100 "structural score" offline (is there an SVG, two
+wheels, a frame, wings…). That has been removed on request: such a number can
+only approximate “did these elements appear”, and it lends a false precision.
+The judgement is left to whoever looks at the pictures (or to a vision model):
+**same prompt, same model, over consecutive days — the drawings themselves are
+the finding**, and no digit has to stand in for them.
+
+The numbers that remain on the board are not grades, just facts: how many runs,
+average duration, when the newest drawing landed, and how many runs came back
+without a drawing. `没有出图` means the request returned but carried no usable
+SVG (typically a refusal); the raw answer is still saved so you can read it.
 
 ## Storage
 
@@ -183,7 +185,7 @@ Deleting files there is safe; the panel always lists what is on disk.
 | `lib/client.js` | Client half: the read-only flat board (one band per model with all its drawings); actions sit on the Settings side (React) |
 | `cordis.patch.yml` | Bundle patch that mounts the package as one host row |
 | `package.json` | npm metadata + `dsh.bundle`/`dsh.client`/`dsh.compatibility` |
-| `test/pelican.test.mjs` | Offline test: rubric, per-model roll-up, provider parsing, target selection, route wiring |
+| `test/pelican.test.mjs` | Offline test: per-model roll-up, provider parsing, target selection, schedule control, route wiring |
 
 ## Test
 

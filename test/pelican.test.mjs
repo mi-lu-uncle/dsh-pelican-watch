@@ -16,7 +16,6 @@ import {
   listGallery,
   prune,
   readKeyFromCredentials,
-  scoreDrawing,
   summarizeRuns,
   parseProviderRows,
   normalizeTargets,
@@ -283,42 +282,30 @@ assert.ok(!/skill|工具|agent/i.test(PROMPT), 'prompt stays a pure drawing task
   globalThis.fetch = real;
 }
 
-// ---- IQ rubric ----
-const GOOD_PAGE = `<!doctype html><html><body><svg viewBox="0 0 400 300">
-<g id="frame"><path d="M60 240 L160 150"/><path d="M160 150 L260 240"/><path d="M160 150 L120 110"/>
-<line x1="1" y1="2" x2="3" y2="4"/><line x1="5" y1="6" x2="7" y2="8"/><line x1="9" y1="10" x2="11" y2="12"/>
-<polyline points="1,1 2,2 3,3"/></g>
-<circle id="wheel-front" cx="60" cy="240" r="40"/><circle id="wheel-back" cx="300" cy="240" r="40"/>
-<rect id="handlebar" x="100" y="90" width="40" height="6"/>
-<ellipse id="saddle" cx="150" cy="120" rx="18" ry="6"/>
-<circle id="pedal-crank" cx="170" cy="200" r="8"/>
-<path id="pelican-body" d="M200 140 q20 -30 40 0"/><path id="pelican-wing" d="M210 150 q15 10 30 0"/>
-<path id="beak" d="M240 145 l30 6 l-30 6z"/></svg></body></html>`;
-assert.equal(scoreDrawing(GOOD_PAGE).score, 100, 'a complete drawing hits every rubric line');
-assert.ok(scoreDrawing(GOOD_PAGE).features.includes('wheels'));
-assert.equal(scoreDrawing('很抱歉，我不能画这个。').score, 0, 'a refusal scores zero');
-assert.ok(scoreDrawing('这里只有文字，没有图。').features.length === 0);
-assert.equal(scoreDrawing('').score, 0, 'empty answer scores zero');
-
-// ---- per-model roll-up (the IQ board) ----
+// ---- per-model roll-up: counts, durations, refusals — no scoring ----
 const summary = summarizeRuns([
-  { model: 'alpha', provider: 'p', score: 90, ms: 1000, ok: true, time: '2026-01-03T00:00:00Z' },
-  { model: 'alpha', provider: 'p', score: 80, ms: 2000, ok: true, time: '2026-01-02T00:00:00Z' },
-  { model: 'alpha', provider: 'p', score: 70, ms: 3000, ok: false, time: '2026-01-01T00:00:00Z' },
-  { model: 'beta', provider: 'q', score: 40, ms: 500, ok: true, time: '2026-01-01T00:00:00Z' },
+  { model: 'alpha', provider: 'p', ms: 1000, ok: true, time: '2026-01-03T00:00:00Z' },
+  { model: 'alpha', provider: 'p', ms: 2000, ok: true, time: '2026-01-02T00:00:00Z' },
+  { model: 'alpha', provider: 'p', ms: 3000, ok: false, time: '2026-01-01T00:00:00Z' },
+  { model: 'beta', provider: 'q', ms: 500, ok: true, time: '2026-01-01T00:00:00Z' },
 ]);
-assert.deepEqual(summary.map((r) => r.model), ['alpha', 'beta'], 'best latest score first');
+assert.deepEqual(summary.map((r) => r.model), ['alpha', 'beta'], 'newest activity first');
 assert.deepEqual(
-  { count: summary[0].count, latest: summary[0].latest, avg: summary[0].avg, best: summary[0].best, worst: summary[0].worst },
-  { count: 3, latest: 90, avg: 80, best: 90, worst: 70 },
+  { count: summary[0].count, avgMs: summary[0].avgMs, lastMs: summary[0].lastMs, refusals: summary[0].refusals },
+  { count: 3, avgMs: 2000, lastMs: 1000, refusals: 1 },
 );
-assert.equal(summary[0].trend, 15, 'trend = latest vs the average of the older runs');
-assert.equal(summary[0].avgMs, 2000);
-assert.equal(summary[0].refusals, 1);
-assert.equal(summary[1].trend, 0, 'a single run has no trend');
-assert.deepEqual(summary[0].scores, [70, 80, 90], 'sparkline series is oldest → newest');
-assert.deepEqual(summary[1].scores, [40]);
+assert.equal(summary[0].lastTime, '2026-01-03T00:00:00Z', 'the newest run time is reported');
+assert.equal(summary[0].score, undefined, 'no score is computed any more');
+assert.equal(summary[0].scores, undefined, 'and no score series either');
+assert.equal(summary[1].avgMs, 500);
+assert.equal(summary[1].refusals, 0);
 assert.deepEqual(summarizeRuns([]), []);
+assert.equal(summarizeRuns([{ model: 'x', ok: true, ms: null }])[0].avgMs, null, 'a run without a duration');
+assert.deepEqual(
+  summarizeRuns([{ model: 'x', ok: false, time: '2026-01-01T00:00:00Z' }, { model: 'x', ok: false, time: '2026-01-02T00:00:00Z' }])[0],
+  { model: 'x', provider: '', count: 2, avgMs: null, lastMs: null, refusals: 2, lastTime: '2026-01-01T00:00:00Z' },
+  'two refusals → both counted',
+);
 
 // ---- provider discovery out of a profile patch layer ----
 const PATCH = `- id: llm-pi-ai
@@ -442,8 +429,8 @@ assert.deepEqual(loadSettings(path.join(tmp, 'no-settings')), {}, 'missing setti
   const list2 = JSON.parse(listRes2.body);
   assert.equal(list2.images.length, 1, 'only the requested model ran');
   assert.equal(list2.images[0].model, 'live-a');
-  assert.equal(typeof list2.images[0].score, 'number');
-  assert.equal(Array.isArray(list2.images[0].features), true);
+  assert.equal(list2.images[0].score, undefined, 'the gallery carries no score');
+  assert.equal(list2.images[0].features, undefined, 'and no rubric features');
   assert.equal(list2.targets.length, 1);
   assert.equal(list2.summary[0].model, 'live-a');
   assert.equal(list2.summary[0].count, 1);

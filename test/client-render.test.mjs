@@ -99,8 +99,8 @@ const settingsSlot = slots.find((s) => s.config.name === 'settings.section').com
 
 // ── fixture: the real payload shape (3 targets, one of them timing out) ─────
 const IMAGES = [
-  { id: '20261016-153930_deepseek-flash', time: '2026-10-16T07:39:30.478Z', model: 'deepseek-flash', provider: 'taotoken', ms: 144984, ok: true, score: 88, features: ['svg', 'wheels'], bytes: 3942, hasSvg: true },
-  { id: '20261016-153917_deepseek-v4-flash-vision-exp', time: '2026-10-16T07:39:17.540Z', model: 'deepseek-v4-flash-vision-exp', provider: 'taotoken', ms: 132043, ok: true, score: 94, features: ['svg'], bytes: 6170, hasSvg: true },
+  { id: '20261016-153930_deepseek-flash', time: '2026-10-16T07:39:30.478Z', model: 'deepseek-flash', provider: 'taotoken', ms: 144984, ok: true, bytes: 3942, hasSvg: true },
+  { id: '20261016-153917_deepseek-v4-flash-vision-exp', time: '2026-10-16T07:39:17.540Z', model: 'deepseek-v4-flash-vision-exp', provider: 'taotoken', ms: 132043, ok: true, bytes: 6170, hasSvg: true },
 ];
 const TARGETS = [
   { provider: 'taotoken', baseURL: 'https://taotoken.net/api/v1', apiKeyEnv: 'TAOTOKEN_API_KEY', model: 'deepseek-flash' },
@@ -108,9 +108,9 @@ const TARGETS = [
   { provider: 'taotoken', baseURL: 'https://taotoken.net/api/v1', apiKeyEnv: 'TAOTOKEN_API_KEY', model: 'deepseek-v4-flash-vision-exp' },
 ];
 const SUMMARY = [
-  { model: 'deepseek-v4-flash-vision-exp', provider: 'taotoken', count: 2, latest: 94, avg: 94, best: 94, worst: 94, trend: 0, avgMs: 100039, refusals: 0, lastTime: IMAGES[1].time, scores: [94, 94] },
-  { model: 'deepseek-flash', provider: 'taotoken', count: 1, latest: 88, avg: 88, best: 88, worst: 88, trend: 0, avgMs: 144984, refusals: 0, lastTime: IMAGES[0].time, scores: [88] },
-  { model: 'deepseek-v4-flash', provider: 'taotoken', count: 3, latest: null, avg: null, best: null, worst: null, trend: 0, avgMs: null, refusals: 3, lastTime: null, scores: [] },
+  { model: 'deepseek-v4-flash-vision-exp', provider: 'taotoken', count: 2, avgMs: 100039, lastMs: 132043, refusals: 0, lastTime: IMAGES[1].time },
+  { model: 'deepseek-flash', provider: 'taotoken', count: 1, avgMs: 144984, lastMs: 144984, refusals: 0, lastTime: IMAGES[0].time },
+  { model: 'deepseek-v4-flash', provider: 'taotoken', count: 3, avgMs: null, lastMs: null, refusals: 3, lastTime: null },
 ];
 const basePayload = {
   ok: true, images: IMAGES, targets: TARGETS, summary: SUMMARY,
@@ -151,7 +151,9 @@ async function mount(component, props) {
   for (const target of TARGETS) assert.ok(out.includes(target.model), `band for ${target.model}`);
   assert.equal(seen.imgs.length, IMAGES.length, 'one inline preview per saved drawing');
   assert.ok(seen.imgs.every((src) => src.startsWith('/api/pelican-watch/image?id=')), 'previews use the same-origin image route');
-  assert.ok(out.includes('94') && out.includes('88'), 'scores are printed');
+  assert.ok(out.includes('3 次检测') && out.includes('均耗时'), 'each band reports runs and average duration');
+  // "\d+ 分" = a score badge; "30 分钟" is the interval and must not trip this.
+  assert.ok(!/\d+\s*分(?!钟)/.test(out) && !out.includes('/100'), 'no score is shown anywhere');
   assert.ok(out.includes('没出图 3 次'), 'the model that never returns reports its refusal count');
   assert.ok(out.includes('超过 300 秒没有返回'), 'the timeout reason is printed on the page');
   assert.ok(out.includes('145.0s') && out.includes('132.0s'), 'per-drawing duration is printed');
@@ -192,7 +194,7 @@ async function mount(component, props) {
   assert.equal(seen.onclick, 0, 'empty board also has nothing to click');
 
   payload = { ...basePayload, images: [], summary: [
-    { model: 'deepseek-flash', provider: 'taotoken', count: 1, latest: null, avg: null, best: null, worst: null, trend: 0, avgMs: null, refusals: 1, lastTime: null, scores: [] },
+    { model: 'deepseek-flash', provider: 'taotoken', count: 1, avgMs: null, lastMs: null, refusals: 1, lastTime: null },
   ] };
   const out2 = await mount(mainSlot, {});
   assert.ok(out2.includes('还没有画'), 'targets but no drawings → explains the scheduler');
@@ -201,7 +203,7 @@ async function mount(component, props) {
 // ── 5. a model that ran but never produced a drawing is not "ok" ───────────
 {
   payload = { ...basePayload, images: [], errors: {}, summary: [
-    { model: 'deepseek-v4-flash', provider: 'taotoken', count: 6, latest: null, avg: null, best: null, worst: null, trend: 0, avgMs: null, refusals: 6, lastTime: null, scores: [] },
+    { model: 'deepseek-v4-flash', provider: 'taotoken', count: 6, avgMs: null, lastMs: null, refusals: 6, lastTime: null },
   ], targets: [TARGETS[1]] };
   const out = await mount(mainSlot, {});
   assert.ok(out.includes('没出图'), 'status reads “no drawing”, not “ok” (the error map is empty after a restart)');
