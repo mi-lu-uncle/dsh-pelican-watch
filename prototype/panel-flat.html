@@ -135,9 +135,9 @@
   .trend.up{color:var(--ok)} .trend.down{color:var(--err)} .trend.flat{color:var(--label-3)}
 
   /* 「整页」渲染模式：正式实现里这是 sandbox iframe，这里画出页面外框以示区别 */
-  .pageShell{border:1px solid var(--border-l2);border-radius:var(--r-md);overflow:hidden;background:var(--bg-card)}
+  .pageShell{min-width:0;max-width:100%;border:1px solid var(--border-l2);border-radius:var(--r-md);overflow:hidden;background:var(--bg-card)}
   .pageBar{display:flex;align-items:center;gap:6px;padding:5px 8px;background:var(--bg-elev);border-bottom:1px solid var(--border-l1);
-    font-family:var(--mono);font-size:10.5px;color:var(--label-3);white-space:nowrap;overflow:hidden}
+    font-family:var(--mono);font-size:10.5px;color:var(--label-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
   .pageBar i{width:7px;height:7px;border-radius:999px;background:var(--border-l2);flex:none}
   .pageShell .artBox{border:0;border-radius:0}
 
@@ -333,7 +333,7 @@ function artOf(draw, opts = {}){
   const badge = opts.badge === false ? '' :
     `<span class="pill ${scorePill(draw.score)} sc">${draw.score}</span>`;
   const inner = `<div class="artBox">${badge}<div class="art">${art(draw.seed)}</div></div>`;
-  if (state.render === 'page'){
+  if (state.render === 'page' && opts.frame !== false){
     return `<div class="pageShell"><div class="pageBar"><i></i><i></i><i></i>${draw.model}.html</div>${inner}</div>`;
   }
   return inner;
@@ -382,7 +382,7 @@ function header(){
 function VariantE(){
   const cols = MODELS.map((m) => {
     const mine = drawsOf(m.id);
-    const strip = mine.slice(0, 5).map((d) => `<div>${artOf(d, { badge:false })}<div class="st">${d.at} · ${d.score}</div></div>`).join('');
+    const strip = mine.slice(0, 5).map((d) => `<div>${artOf(d, { badge:false, frame:false })}<div class="st">${d.at} · ${d.score}</div></div>`).join('');
     const score = m.latest == null
       ? `<div class="n muted">—</div>`
       : `<div class="n" style="color:${scoreColor(m.latest)}">${m.latest}<small>/100</small></div>`;
