@@ -1,0 +1,50 @@
+{
+  "name": "@mi-lu-uncle/dsh-pelican-watch",
+  "version": "0.1.0",
+  "description": "DSH community plugin: schedule a model to draw an SVG 'pelican riding a bicycle' on a fixed interval and browse the gallery, as a long-running model-quality (降智) probe.",
+  "author": "milu",
+  "repository": "https://github.com/mi-lu-uncle/dsh-pelican-watch",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "pelican",
+    "benchmark",
+    "model-quality"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.0-rc.2": "compatible"
+      }
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.4",
+    "react": "^18.2.0"
+  }
+}
