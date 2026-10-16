@@ -48,7 +48,15 @@ dsh plugin --profile desktop add /absolute/path/to/dsh-pelican-watch
 
 ## API キー
 
-キーは呼び出し時に解決されます。まず `process.env[apiKeyEnv]`、次に設定値の `apiKey`。どちらも無い場合はその回の作画をスキップし、パネルに理由（`缺少 API Key：…`）を表示します。どちらかを設定すれば、次回の定時作画から正常に動作します。
+キーは呼び出し時に次の順で解決されます：
+
+1. 設定の `apiKey`；
+2. 環境変数 `process.env[apiKeyEnv]`（デフォルト `TAOTOKEN_API_KEY`）；
+3. DSH 自身のクレデンシャルストア — `~/.dsh/.credentials.yaml` の `refs:` にある同名エントリ（パスは `credentialsFile` で変更可）。
+
+3 番目がある理由：デスクトップ版 DSH は Finder / Dock から起動されるため、シェルで export した環境変数を**継承しません**。一方、DSH 経由で設定したプロバイダのキーはすでに `refs:` に（そのプロバイダの `apiKeyEnv` 名で）記録されています。つまり追加設定なしでそのまま動きます。
+
+3 つとも無い場合はその回の作画をスキップし、パネルに理由（`缺少 API Key：…`）を表示します。いずれかを設定すれば、次回の定時作画から正常に動作します。
 
 ## ストレージ
 

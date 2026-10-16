@@ -62,10 +62,20 @@ incomparable, so treat `prompt` as a last resort.
 
 ## API key
 
-The key is resolved at call time: first `process.env[apiKeyEnv]`, then the
-`apiKey` config value. If neither is set the run is skipped and the panel
-shows the reason (`缺少 API Key：…`) — fix either one and the next scheduled
-run proceeds.
+The key is resolved at call time, in this order:
+
+1. a literal `apiKey` in config;
+2. `process.env[apiKeyEnv]` (default `TAOTOKEN_API_KEY`);
+3. the same name in DSH's own credential store — `refs:` in
+   `~/.dsh/.credentials.yaml` (override the path with `credentialsFile`).
+
+Step 3 is why a DSH-configured provider key works with no extra setup: the
+desktop app is launched from Finder/Dock and therefore does **not** inherit
+environment variables exported in a shell, while `refs:` already holds the key
+under the provider's `apiKeyEnv` name.
+
+With none of the three the run is skipped and the panel shows the reason
+(`缺少 API Key：…`) — set any one of them and the next scheduled run proceeds.
 
 ## Storage
 

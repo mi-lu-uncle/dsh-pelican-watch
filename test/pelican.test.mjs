@@ -13,6 +13,7 @@ import {
   parseMeta,
   listGallery,
   prune,
+  readKeyFromCredentials,
   PROMPT,
 } from '../lib/index.js';
 
@@ -138,7 +139,12 @@ try {
   };
   const savedEnv = process.env.PELICAN_TEST_KEY;
   delete process.env.PELICAN_TEST_KEY;
-  apply(noKeyCtx, { dir: path.join(tmp, 'nk'), apiKeyEnv: 'PELICAN_TEST_KEY', runOnStart: false });
+  apply(noKeyCtx, {
+    dir: path.join(tmp, 'nk'),
+    apiKeyEnv: 'PELICAN_TEST_KEY',
+    credentialsFile: path.join(tmp, 'no-key-store.yaml'), // hermetic: never read the real store
+    runOnStart: false,
+  });
   const nkList = fakeRes();
   await routes['/api/pelican-watch/list:nk'].handler(req('GET', '/api/pelican-watch/list'), nkList);
   const nkPayload = JSON.parse(nkList.body);
@@ -150,6 +156,68 @@ try {
   assert.ok(nkPayload2.lastError && nkPayload2.lastError.includes('PELICAN_TEST_KEY'), 'missing key is reported');
   assert.equal(nkPayload2.images.length, 0);
   if (savedEnv !== undefined) process.env.PELICAN_TEST_KEY = savedEnv;
+
+  // ---- key resolution: config > env > DSH's credential store ----
+  // The GUI app does not inherit shell env vars, so the credential store is the
+  // source that makes a DSH-configured provider key work out of the box.
+  const credsFile = path.join(tmp, 'credentials.yaml');
+  fs.writeFileSync(credsFile, [
+    'version: 1',
+    'records:',
+    '  client-connection/browser-session:',
+    '    kind: grant',
+    'refs:',
+    '  PELICAN_PK_KEY: from-file',
+    '  OTHER_KEY: "quoted-value"  # trailing comment',
+    'later:',
+    '  PELICAN_PK_KEY: ignored-outside-refs',
+    '',
+  ].join('\n'));
+  const garbage = path.join(tmp, 'garbage.yaml');
+  fs.writeFileSync(garbage, 'this is not: [valid\n  yaml at all');
+
+  // unit level: the tiny reader degrades to null instead of throwing
+  assert.equal(readKeyFromCredentials('PELICAN_PK_KEY', credsFile), 'from-file');
+  assert.equal(readKeyFromCredentials('OTHER_KEY', credsFile), 'quoted-value', 'quotes and comment stripped');
+  assert.equal(readKeyFromCredentials('MISSING_KEY', credsFile), null, 'unknown ref');
+  assert.equal(readKeyFromCredentials('PELICAN_PK_KEY', path.join(tmp, 'nope.yaml')), null, 'missing file');
+  assert.equal(readKeyFromCredentials('PELICAN_PK_KEY', garbage), null, 'garbage file');
+  assert.equal(readKeyFromCredentials('', credsFile), null, 'no env name');
+  assert.equal(readKeyFromCredentials('PELICAN_PK_KEY', path.join(tmp, 'later-key.yaml')) , null, 'reference file absent');
+
+  // end to end: the authorization header the request actually carries
+  const authSeen = [];
+  globalThis.fetch = async (url, init) => {
+    authSeen.push(init.headers.authorization);
+    return {
+      ok: true,
+      status: 200,
+      text: async () => '',
+      json: async () => ({ choices: [{ message: { content: PAGE } }] }),
+    };
+  };
+  const keyRoutes = {};
+  const keyCtx = {
+    effect: (fn) => { const d = fn(); if (typeof d === 'function') effectDisposes.push(d); return d; },
+    webServer: { register: (r) => { keyRoutes[r.path] = r; return () => {}; } },
+  };
+  apply(keyCtx, {
+    dir: path.join(tmp, 'keys'),
+    model: 'probe-model',
+    apiKeyEnv: 'PELICAN_PK_KEY',
+    credentialsFile: credsFile,
+    runOnStart: false,
+  });
+  const trigger = async () => {
+    await keyRoutes['/api/pelican-watch/run'].handler(req('POST', '/api/pelican-watch/run'), fakeRes());
+    await new Promise((r) => setTimeout(r, 80));
+  };
+  process.env.PELICAN_PK_KEY = 'from-env';
+  await trigger();
+  assert.equal(authSeen.at(-1), 'Bearer from-env', 'env beats the credential store');
+  delete process.env.PELICAN_PK_KEY;
+  await trigger();
+  assert.equal(authSeen.at(-1), 'Bearer from-file', 'the credential store is the last fallback');
 
   // runOnStart arms the schedule; disposing the effect clears it
   const armCtx = {

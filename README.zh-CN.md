@@ -48,7 +48,15 @@ dsh plugin --profile desktop add /absolute/path/to/dsh-pelican-watch
 
 ## API Key
 
-Key 在调用时解析：先取 `process.env[apiKeyEnv]`，再取配置里的 `apiKey`。两者都没有时跳过本次作画，并在面板上显示原因（`缺少 API Key：…`）——补上任意一种，下一次定时作画就会正常进行。
+Key 在调用时按以下顺序解析：
+
+1. 配置里的 `apiKey`；
+2. 环境变量 `process.env[apiKeyEnv]`（默认 `TAOTOKEN_API_KEY`）；
+3. DSH 自己的凭据库——`~/.dsh/.credentials.yaml` 里 `refs:` 的同名条目（可用 `credentialsFile` 改路径）。
+
+第 3 条的意义：桌面版 DSH 从访达/程序坞启动，**不继承**你 shell 里 export 的环境变量；而通过 DSH 配置的 provider key 本来就已记在 `refs:` 里（键名就是该 provider 的 `apiKeyEnv`），所以开箱即用、无需重复配置。
+
+三者都没有时跳过本次作画，并在面板显示原因（`缺少 API Key：…`）；补上任意一种，下一次定时作画即正常进行。
 
 ## 存储
 
