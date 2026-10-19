@@ -324,6 +324,42 @@ assert.equal(table['/api/pelican-watch/raw'], undefined, 'no raw page route: the
   assert.deepEqual(JSON.parse(listRes.body).targets, pick.targets);
 }
 
+// ── single-model runs overlap instead of waiting for each other ───────────
+// Clicking a band's button used to be refused while anything ran; two models
+// can now be probed at the same time, and a duplicate click is a no-op.
+{
+  const slow = makeLlm({ delayMs: 120 });
+  const t = mount(slow, { dir: path.join(tmp, 'concurrent-single'), runOnStart: false, concurrency: 2 });
+  const post = async (body) => {
+    const res = fakeRes();
+    await t['/api/pelican-watch/run'].handler({ ...req('POST', '/api/pelican-watch/run'), async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(body)); } }, res);
+    return { code: res.code, body: JSON.parse(res.body) };
+  };
+  // Seeds a target list, then probes two of them from two separate clicks.
+  await t['/api/pelican-watch/targets'].handler({ ...req('POST', '/api/pelican-watch/targets'), async *[Symbol.asyncIterator]() {
+    yield Buffer.from(JSON.stringify({ targets: [{ provider: 'p1', model: 'one' }, { provider: 'p1', model: 'two' }, { provider: 'p1', model: 'three' }] }));
+  } }, fakeRes());
+
+  const first = await post({ model: 'one', provider: 'p1' });
+  const second = await post({ model: 'two', provider: 'p1' });
+  assert.equal(first.body.started, true);
+  assert.equal(second.body.started, true, 'a second model does not wait for the first');
+  await wait(40);
+  assert.equal(slow.requests.length, 2, 'both requests are in flight at once');
+  assert.deepEqual([...slow.requests].map((r) => r.model).sort(), ['one', 'two']);
+
+  const duplicate = await post({ model: 'one', provider: 'p1' });
+  assert.equal(duplicate.body.started, false, 'clicking a model that is already running is a no-op');
+  await wait(40);
+  assert.equal(slow.requests.length, 2, 'and it sends no extra request');
+
+  // The third one waits for a free slot (concurrency 2), then runs.
+  const third = await post({ model: 'three', provider: 'p1' });
+  assert.equal(third.body.started, true, 'a third model is queued, not refused');
+  await wait(400);
+  assert.equal(slow.requests.length, 3, 'and it runs once a slot frees up');
+}
+
 // ── a provider failure is reported as text, not as a crash ────────────────
 {
   const failing = makeLlm({ failure: { code: 'MISSING_CREDENTIAL', message: 'no API key for route "deepseek-official"' } });
@@ -397,7 +433,9 @@ assert.match(failureText({}, { provider: 'x' }), /调用失败/);
   const payload = JSON.parse(listRes.body);
   // Progress and failures are keyed by provider|model: the same model id may
   // exist under several providers, so a bare model name would collide.
-  assert.deepEqual(payload.stopped, ['deepseek-account|m-a', 'deepseek-account|m-b'], 'both models are reported as stopped');
+  // The queued model is marked at once, the in-flight one when its abort lands,
+  // so compare as a set.
+  assert.deepEqual([...payload.stopped].sort(), ['deepseek-account|m-a', 'deepseek-account|m-b'], 'both models are reported as stopped');
   assert.equal(payload.errors['deepseek-account|m-a'], STOPPED_MESSAGE);
   assert.equal(payload.errors['deepseek-account|m-b'], STOPPED_MESSAGE);
   assert.equal(payload.images.length, 0);

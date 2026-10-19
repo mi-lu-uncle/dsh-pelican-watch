@@ -203,6 +203,10 @@ async function press(label, props = {}) {
   return draw(props);
 }
 
+// The per-band probe button advertises its purpose in the tooltip.
+const 只测Hint = '立刻给这个模型画一张，只发一个请求';
+const 看大图Label = '看大图';
+
 // ── 1. the board: every model, every drawing, nothing hidden behind a click ─
 {
   payload = basePayload;
@@ -227,12 +231,12 @@ async function press(label, props = {}) {
     'header actions, one probe per selected band, one per drawing');
   assert.ok(seen.buttons.some((b) => b.label.includes('全部检测一遍')), 'the header offers the manual probe');
   assert.ok(seen.buttons.some((b) => b.label.includes('设置')), 'the header offers the gear');
-  assert.equal(seen.buttons.filter((b) => b.title === '只测这个').length, bandCount,
+  assert.equal(seen.buttons.filter((b) => b.title === 只测Hint).length, bandCount,
     'each selected model can be probed on its own');
-  assert.equal(seen.buttons.filter((b) => b.title === '看大图').length, IMAGES.length,
+  assert.equal(seen.buttons.filter((b) => b.title === 看大图Label).length, IMAGES.length,
     'each drawing opens the bigger view');
   assert.ok(seen.buttons
-    .filter((b) => !['看大图', '只测这个'].includes(b.title) && !b.label.includes('全部检测一遍') && !b.label.includes('设置')).length === 0,
+    .filter((b) => ![看大图Label, 只测Hint].includes(b.title) && !b.label.includes('全部检测一遍') && !b.label.includes('设置')).length === 0,
     'nothing else in the panel is clickable');
   assert.ok(!out.includes('检测节奏') && !out.includes('保存间隔'), 'the settings modal stays closed');
 }
@@ -264,13 +268,13 @@ async function press(label, props = {}) {
   await mount();
   const tiles = seen.imgs.length;
   assert.equal(tiles, IMAGES.length, 'the board previews each drawing once');
-  const out = await pressWhere((b) => b.title === '看大图');
+  const out = await pressWhere((b) => b.title === 看大图Label);
   assert.equal(seen.imgs.length, tiles + 1, 'the viewer adds exactly one image');
   assert.ok(seen.imgs[seen.imgs.length - 1].startsWith('/api/pelican-watch/image?id='),
     'and it is the drawing served as an image');
   assert.ok(!out.includes('<iframe'), 'no iframe: the page HTML is never rendered');
   assert.ok(!fetched.some((entry) => entry.url.includes('/raw')), 'the raw page is never fetched');
-  assert.ok(out.includes('只测这个'), 'the viewer still offers a per-model probe');
+  assert.equal(seen.buttons.filter((b) => b.title === 只测Hint).length > 0, true, 'the viewer still offers a per-model probe');
   assert.ok(!/function|=>/.test(out), 'no stray source text in the viewer');
 }
 
@@ -344,10 +348,10 @@ async function press(label, props = {}) {
   payload = basePayload;
   fetched.length = 0;
   await mount();
-  const probes = seen.buttons.filter((b) => b.title === '只测这个');
+  const probes = seen.buttons.filter((b) => b.title === 只测Hint);
   assert.equal(probes.length, TARGETS.length, 'each selected model has its own probe button');
-  assert.ok(probes.every((b) => b.label.includes('只测')), 'and it says what it does, not just a triangle');
-  await pressWhere((b) => b.title === '只测这个');
+  assert.ok(probes.every((b) => b.label.includes('单独检测')), 'and it says what it does, not just a triangle');
+  await pressWhere((b) => b.title === 只测Hint);
   const calls = fetched.filter((entry) => entry.url.endsWith('/api/pelican-watch/run'));
   assert.equal(calls.length, 1, 'pressing it starts exactly one pass');
   assert.deepEqual(Object.keys(calls[0].body).sort(), ['model', 'provider'],
@@ -361,7 +365,7 @@ async function press(label, props = {}) {
 {
   payload = { ...basePayload, targets: [], images: IMAGES, summary: SUMMARY };
   await mount();
-  assert.equal(seen.buttons.filter((b) => b.title === '只测这个').length, 0,
+  assert.equal(seen.buttons.filter((b) => b.title === 只测Hint).length, 0,
     'bands that are only history cannot be probed');
   assert.equal(seen.tags.filter((tag) => tag === 'section').length, SUMMARY.length, 'they still render');
 }

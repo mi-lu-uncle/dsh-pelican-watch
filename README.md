@@ -28,8 +28,8 @@ models**:
 - **One gear button** — the panel's own top-right corner opens a settings sheet:
   pick models, pause or retune the schedule, stop the pass, see one drawing
   bigger. The board below stays pure viewing, so nothing has to be clicked to be
-  read. To probe **one** model, press the `▷` on its band: one request, nothing
-  else spends.
+  read. To probe **one** model, press 「单独检测」 on its band: one request for
+  that model — and several bands can be probing at the same time.
 - **Stop it, retune it** — that same sheet can **pause / resume automatic
   probing**, change the **interval** (1–1440 minutes), and **stop the pass that is
   running right now**: requests in flight are aborted, models that had not started
