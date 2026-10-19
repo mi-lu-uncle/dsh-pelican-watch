@@ -125,7 +125,8 @@ const basePayload = {
   ok: true, images: IMAGES, targets: TARGETS, summary: SUMMARY,
   maxImages: 12, intervalMinutes: 30, model: '', running: false, runningModel: null,
   inflight: [], inflightSince: {}, startedAt: null, done: 0, total: 0,
-  errors: { 'deepseek-v4-flash': '超过 300 秒没有返回（可在插件配置里调大 timeoutSeconds）' },
+  providerNames: { 'deepseek-account': 'DeepSeek 账号', taotoken: 'taotoken' },
+  errors: { 'taotoken|deepseek-v4-flash': '超过 300 秒没有返回（可在插件配置里调大 timeoutSeconds）' },
   timeoutSeconds: 300,
   concurrency: 3, nextRunAt: Date.now() + 600000, lastRunAt: '2026-10-16T07:40:05.501Z', lastError: null,
 };
@@ -267,6 +268,38 @@ async function press(label, props = {}) {
   assert.ok(!/function|=>/.test(out), 'no stray source text in the viewer');
 }
 
+// ── 1c. the same model id under two providers is two bands ──────────────────
+// The signed-in account and a third-party provider both serve `deepseek-flash`.
+// Matching on the model name alone merged their drawings and statistics, and
+// the board showed two identical bands that looked like "deepseek via taotoken".
+{
+  const shared = [
+    { id: 'acc-1', time: '2026-10-19T02:39:00.000Z', model: 'deepseek-flash', provider: 'deepseek-account', ms: 1000, ok: true, bytes: 100, hasSvg: true },
+    { id: 'tok-1', time: '2026-10-19T02:37:00.000Z', model: 'deepseek-flash', provider: 'taotoken', ms: 2000, ok: true, bytes: 100, hasSvg: true },
+  ];
+  payload = {
+    ...basePayload,
+    images: shared,
+    summary: [
+      { model: 'deepseek-flash', provider: 'deepseek-account', count: 1, avgMs: 1000, lastMs: 1000, refusals: 0, lastTime: shared[0].time },
+      { model: 'deepseek-flash', provider: 'taotoken', count: 1, avgMs: 2000, lastMs: 2000, refusals: 0, lastTime: shared[1].time },
+    ],
+    targets: [
+      { provider: 'deepseek-account', model: 'deepseek-flash' },
+      { provider: 'taotoken', model: 'deepseek-flash' },
+    ],
+    errors: {},
+  };
+  const out = await mount();
+  assert.equal(seen.tags.filter((tag) => tag === 'section').length, 2, 'two bands, one per provider');
+  assert.ok(out.includes('DeepSeek 账号'), 'each band names its provider (display name)');
+  assert.ok(out.includes('taotoken'), 'and the other one too');
+  assert.equal(seen.imgs.length, 2, 'each band shows only its own drawing');
+  assert.ok(out.includes('/api/pelican-watch/image?id=acc-1') && out.includes('/api/pelican-watch/image?id=tok-1'),
+    'one preview per provider, no cross-contamination');
+  assert.ok(out.includes('1 次检测'), 'each band reports its own count');
+}
+
 // ── 2. the gear opens the settings modal, which holds every action ──────────
 // Probing costs tokens and the model list changes often, so this must be one
 // click away from the board — but inside the panel, not in DSH Settings.
@@ -292,8 +325,8 @@ async function press(label, props = {}) {
   payload = {
     ...basePayload,
     running: true, done: 1, total: 3, lastRunAt: null,
-    inflight: ['deepseek-flash', 'deepseek-v4-flash'],
-    inflightSince: { 'deepseek-flash': Date.now() - 72000, 'deepseek-v4-flash': Date.now() - 72000 },
+    inflight: ['taotoken|deepseek-flash', 'taotoken|deepseek-v4-flash'],
+    inflightSince: { 'taotoken|deepseek-flash': Date.now() - 72000, 'taotoken|deepseek-v4-flash': Date.now() - 72000 },
   };
   const out = await mount();
   assert.ok(out.includes('已完成 1/3'), 'progress is shown');
@@ -343,7 +376,7 @@ async function press(label, props = {}) {
 
 // ── 7. stopping a pass is visible while it happens ────────────────────────
 {
-  payload = { ...basePayload, running: true, stopping: true, done: 1, total: 3, inflight: ['deepseek-flash'] };
+  payload = { ...basePayload, running: true, stopping: true, done: 1, total: 3, inflight: ['taotoken|deepseek-flash'] };
   const out = await mount();
   assert.ok(out.includes('正在停止'), 'the progress line says it is stopping');
   assert.ok(!out.includes('正在检测 deepseek-flash'), 'and stops naming models as “probing”');
@@ -355,8 +388,8 @@ async function press(label, props = {}) {
 {
   payload = {
     ...basePayload,
-    stopped: ['deepseek-v4-flash'],
-    errors: { 'deepseek-v4-flash': '已手动停止（本轮检测被中断）' },
+    stopped: ['taotoken|deepseek-v4-flash'],
+    errors: { 'taotoken|deepseek-v4-flash': '已手动停止（本轮检测被中断）' },
   };
   const out = await mount();
   assert.ok(out.includes('>已停止<'), 'the band says stopped');

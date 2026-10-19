@@ -78,14 +78,35 @@ assert.equal(listed[0].hasSvg, false);
 assert.equal(listed[1].hasSvg, true);
 assert.equal(listed[0].score, undefined, 'the gallery carries no score');
 
-// ---- prune keeps the newest max and drops both html+svg ----
+// ---- prune keeps the newest `max` per model (not for the whole folder) ----
 const small = path.join(tmp, 'pruned');
-for (let i = 0; i < 5; i += 1) saveRun(small, `m${i}`, PAGE, i, { now: Date.now() + i * 1000 });
+for (let i = 0; i < 5; i += 1) saveRun(small, 'm', PAGE, i, 'p', { now: Date.now() + i * 1000 });
 assert.equal(fs.readdirSync(small).filter((f) => f.endsWith('.html')).length, 5);
 const removed = prune(small, 3);
-assert.equal(removed, 2, 'two oldest dropped');
+assert.equal(removed, 2, 'two oldest of that model dropped');
 assert.equal(fs.readdirSync(small).filter((f) => f.endsWith('.html')).length, 3);
 assert.equal(fs.readdirSync(small).filter((f) => f.endsWith('.svg')).length, 3, 'their svg side files go too');
+
+// Two providers serving a model with the same id are separate histories: the
+// cap is per (provider, model), so neither evicts the other's drawings.
+const perProvider = path.join(tmp, 'per-provider');
+saveRun(perProvider, 'deepseek-flash', PAGE, 1, 'deepseek-account', { now: Date.now() });
+saveRun(perProvider, 'deepseek-flash', PAGE, 2, 'taotoken', { now: Date.now() + 1000 });
+saveRun(perProvider, 'deepseek-flash', PAGE, 3, 'taotoken', { now: Date.now() + 2000 });
+assert.equal(prune(perProvider, 1), 1, 'only the older taotoken drawing is over its own cap');
+const left = fs.readdirSync(perProvider).filter((f) => f.endsWith('.html'));
+assert.equal(left.length, 2, 'one per provider survives');
+assert.deepEqual(listGallery(perProvider, 9).map((i) => i.provider).sort(), ['deepseek-account', 'taotoken'], 'same model, both providers kept');
+
+// ---- summarizeRuns: one bucket per provider+model ----
+assert.deepEqual(
+  summarizeRuns([
+    { provider: 'deepseek-account', model: 'deepseek-flash', ms: 10, ok: true, time: '2026-01-02T00:00:00Z' },
+    { provider: 'taotoken', model: 'deepseek-flash', ms: 20, ok: true, time: '2026-01-01T00:00:00Z' },
+  ]).map((r) => [r.provider, r.model, r.count]),
+  [['deepseek-account', 'deepseek-flash', 1], ['taotoken', 'deepseek-flash', 1]],
+  'the same model id under two providers is two rows, not one merged row',
+);
 
 // ---- summarizeRuns: counts, durations, refusals — no scoring ----
 const summary = summarizeRuns([
@@ -344,9 +365,11 @@ assert.match(failureText({}, { provider: 'x' }), /调用失败/);
   const listRes = fakeRes();
   await t['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), listRes);
   const payload = JSON.parse(listRes.body);
-  assert.deepEqual(payload.stopped, ['m-a', 'm-b'], 'both models are reported as stopped');
-  assert.equal(payload.errors['m-a'], STOPPED_MESSAGE);
-  assert.equal(payload.errors['m-b'], STOPPED_MESSAGE);
+  // Progress and failures are keyed by provider|model: the same model id may
+  // exist under several providers, so a bare model name would collide.
+  assert.deepEqual(payload.stopped, ['deepseek-account|m-a', 'deepseek-account|m-b'], 'both models are reported as stopped');
+  assert.equal(payload.errors['deepseek-account|m-a'], STOPPED_MESSAGE);
+  assert.equal(payload.errors['deepseek-account|m-b'], STOPPED_MESSAGE);
   assert.equal(payload.images.length, 0);
   const again = fakeRes();
   await t['/api/pelican-watch/stop'].handler(req('POST', '/api/pelican-watch/stop'), again);

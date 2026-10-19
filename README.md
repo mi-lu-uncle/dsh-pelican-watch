@@ -34,10 +34,11 @@ models**:
   are skipped without a request being sent. Pausing is written to
   `settings.json` immediately and survives a restart, so a plugin you only probe
   by hand never costs a token on its own.
-- **Bounded history** — keeps the newest N drawings (12 by default), pruning
-  older ones automatically. Same prompt, same model, over days: degradation
-  shows up as worse structure, refusals (saved and badged 「未检出 SVG」), or
-  latency growth.
+- **Bounded history** — keeps the newest N drawings **per model** (12 by
+  default); the cap never gets divided between the models you are probing, and
+  two providers serving the same model id keep separate histories. Same prompt,
+  same model, over days: degradation shows up as worse structure, refusals
+  (saved and badged 「未检出 SVG」), or latency growth.
 
 ## Install
 
@@ -64,6 +65,11 @@ account, the official API-key route, and any third-party provider you configured
 — grouped by the display name DSH uses, each with the models it advertises. Tick
 any number of models and **Save models**: from the next cycle on each selected
 model draws its own picture and gets its own band on the board.
+
+A model id is not unique: the signed-in account and a third-party provider can
+both serve `deepseek-flash`. A band is therefore a **provider + model** pair, and
+it carries the provider's display name next to the model name — two providers
+never share one band, nor one another's drawings.
 
 The plugin never touches key material: calls go through DSH's model service
 (`ctx.llm`), which resolves the credential itself. That is why the
