@@ -51,7 +51,7 @@ dsh plugin --profile desktop add /absolute/path/to/dsh-pelican-watch
 ## 速度与超时
 
 - **模型并行检测**（默认同时 3 个）：一个慢模型不再拖住其他人——每张画一画完就落盘，几秒内出现在面板里。
-- **每个请求有独立超时**（`timeoutSeconds`，默认 300 秒）。超时只在**它自己**那条横幅上显示「超过 N 秒没有返回」，不会卡住整轮。推理型模型确实可能很慢——同一 provider 实测：`qwen3.7-max` 约 52 秒、`deepseek-flash` 约 121 秒（其中 1.5 万 token 是"思考"），而 `glm-5.3-flash` 有时超过 4 分钟。
+- **每个请求有独立超时**（`timeoutSeconds`，默认 600 秒）。超时只在**它自己**那条横幅上显示「超过 N 秒没有返回」，不会卡住整轮。推理型模型确实可能很慢——同一 provider 实测：`qwen3.7-max` 约 52 秒、`deepseek-flash` 约 121 秒（其中 1.5 万 token 是"思考"），而 `glm-5.3-flash` 有时超过 4 分钟。
 - **超时或 HTTP 报错不算画**：既不落盘也不计入出图，因为那是基础设施问题、不是模型表现。而模型**答了却没画**（拒答）会被保存下来、标成「没出图」——那才是值得看的信号。
 - 默认**不发送** `maxTokens`：推理型模型动笔前可能花掉几万 completion token，卡一个上限只会把 SVG 截断，并不会更快。
 
@@ -70,7 +70,7 @@ dsh plugin --profile desktop add /absolute/path/to/dsh-pelican-watch
     #   - { provider: taotoken, model: glm-5.3-flash }
     intervalMinutes: 30                  # 作画间隔
     maxImages: 10                        # 每个模型保留最新几张（1–100；30 分钟一张 ≈ 5 小时）
-    timeoutSeconds: 300                  # 单个请求超时（5–3600）；慢模型可调大
+    timeoutSeconds: 600                  # 单个请求超时（5–3600）；想更快失败可调小
     concurrency: 3                       # 同时检测几个模型
     # maxTokens: 8192                    # 可选；默认不发送（见下文）
     dir: ~/.dsh/pelican-watch            # 保存目录

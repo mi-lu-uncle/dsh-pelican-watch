@@ -98,7 +98,7 @@ default), one drawing each.
 - **Models run in parallel** (3 at a time by default), so one slow model no
   longer delays the others: every drawing is written to disk the moment it
   arrives and shows up in the panel within seconds.
-- **Each request has its own timeout** (`timeoutSeconds`, default 300). A model
+- **Each request has its own timeout** (`timeoutSeconds`, default 600). A model
   that exceeds it is reported as `超过 N 秒没有返回` on its own band instead of
   hanging the whole pass. Reasoning models can genuinely be slow — measured
   against one provider: `qwen3.7-max` ~52s, `deepseek-flash` ~121s (15k of those
@@ -128,7 +128,7 @@ Defaults match the usual profile setup; override any of them on a
     #   - { provider: taotoken, model: glm-5.3-flash }
     intervalMinutes: 30                  # drawing cadence
     maxImages: 10                        # drawings kept per model (1–100; ≈5h at 30min)
-    timeoutSeconds: 300                  # per-request ceiling (5–3600); raise it for slow models
+    timeoutSeconds: 600                  # per-request ceiling (5–3600); lower it if a model hangs
     concurrency: 3                       # how many models are probed at once
     # maxTokens: 8192                    # optional; unset by default (see below)
     dir: ~/.dsh/pelican-watch            # where drawings are saved

@@ -1,6 +1,6 @@
 {
   "name": "@mi-lu-uncle/dsh-pelican-watch",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "DSH community plugin: probe any set of models — each asked to draw an *animated* SVG 'pelican riding a bicycle' on a fixed interval — and lay every drawing out on a read-only board. No scoring: the pictures are the result. Calls go through DSH's own model service, so every provider the app has (including the signed-in DeepSeek account) is selectable, and the plugin never handles a key. Settings live in the panel behind one gear button.",
   "author": "milu",
   "repository": "https://github.com/mi-lu-uncle/dsh-pelican-watch",

@@ -354,6 +354,11 @@ assert.equal(table['/api/pelican-watch/raw'], undefined, 'no raw page route: the
 
 // ── failureText: stable codes become actionable Chinese ───────────────────
 assert.match(failureText({ code: 'ACCOUNT_SIGN_IN_REQUIRED' }), /登录 DeepSeek 账号/);
+// A cut stream reaches us as the provider's bare English word; it must not be
+// shown to the user as-is.
+assert.match(failureText({ code: 'TRANSPORT', message: 'terminated' }), /连接被上游中断/);
+assert.match(failureText({ code: 'TRANSPORT', message: 'terminated' }), /terminated/);
+assert.match(failureText({ code: 'TIMEOUT', message: 'pi-ai stream idle timeout' }), /空闲超时/);
 assert.match(failureText({ code: 'RATE_LIMIT', message: '429' }), /限流.*429/);
 assert.match(failureText({ code: 'WEIRD', message: 'boom' }), /boom/);
 assert.match(failureText({}, { provider: 'x' }), /调用失败/);
