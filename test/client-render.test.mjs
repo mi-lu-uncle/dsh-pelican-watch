@@ -230,6 +230,23 @@ async function press(label, props = {}) {
   assert.ok(!out.includes('检测节奏') && !out.includes('保存间隔'), 'the settings modal stays closed');
 }
 
+// ── 1a. a provider that cannot list its models is shown, not hidden ────────
+// Listing a route can fail (not signed in, expired key). Silently dropping it
+// left the user staring at a provider they had configured in DSH.
+{
+  payload = basePayload;
+  const savedCatalog = CATALOG.providers;
+  CATALOG.providers = [
+    ...savedCatalog,
+    { provider: 'deepseek-official', displayName: 'DeepSeek', models: [], error: 'MISSING_CREDENTIAL: no API key for route deepseek-official' },
+  ];
+  await mount();
+  const out = await press('设置');
+  assert.ok(out.includes('DeepSeek') && out.includes('这个提供方暂时不可用'), 'the broken provider is still listed, flagged');
+  assert.ok(out.includes('MISSING_CREDENTIAL'), 'with the real reason underneath');
+  CATALOG.providers = savedCatalog;
+}
+
 // ── 1b. clicking a drawing opens the picture — never the model's prose ──────
 // The saved page holds the model's whole answer (an intro sentence, a ```html
 // fence, then the SVG), so rendering that page put text next to the drawing.
