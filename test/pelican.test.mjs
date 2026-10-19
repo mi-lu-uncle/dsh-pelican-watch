@@ -360,6 +360,60 @@ assert.equal(table['/api/pelican-watch/raw'], undefined, 'no raw page route: the
   assert.equal(slow.requests.length, 3, 'and it runs once a slot frees up');
 }
 
+// ── removing a model takes its drawings with it ───────────────────────────
+{
+  const t = mount(makeLlm(), { dir: path.join(tmp, 'removal'), runOnStart: false });
+  const save = async (targets) => {
+    const res = fakeRes();
+    await t['/api/pelican-watch/targets'].handler({ ...req('POST', '/api/pelican-watch/targets'), async *[Symbol.asyncIterator]() {
+      yield Buffer.from(JSON.stringify({ targets }));
+    } }, res);
+    return { code: res.code, body: JSON.parse(res.body) };
+  };
+  const dir2 = path.join(tmp, 'removal');
+  saveRun(dir2, 'keep', PAGE, 10, 'p1');
+  saveRun(dir2, 'drop', PAGE, 20, 'p1');
+  saveRun(dir2, 'drop', PAGE, 30, 'p1');
+  assert.equal(await save([{ provider: 'p1', model: 'keep' }, { provider: 'p1', model: 'drop' }]).then((r) => r.code), 200, 'seed both');
+  const listBefore = fakeRes();
+  await t['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), listBefore);
+  assert.equal(JSON.parse(listBefore.body).images.length, 3, 'both models have drawings');
+
+  // A stray drawing from an older selection has no target at all: it must go too.
+  saveRun(dir2, 'ghost', PAGE, 40, 'p1');
+  assert.equal(fs.readdirSync(dir2).filter((f) => f.includes('ghost')).length, 2, 'a leftover with html+svg');
+
+  const dropped = await save([{ provider: 'p1', model: 'keep' }]);
+  assert.equal(dropped.code, 200);
+  assert.equal(dropped.body.count, 1, 'one model left');
+  assert.equal(dropped.body.removed, 3, 'the removed model and the stray leftover were deleted');
+  const listAfter = fakeRes();
+  await t['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), listAfter);
+  const after = JSON.parse(listAfter.body);
+  assert.equal(after.images.length, 1, 'only the kept model is left');
+  assert.equal(after.images[0].model, 'keep');
+  assert.deepEqual(after.targets, [{ provider: 'p1', model: 'keep' }]);
+  assert.equal(fs.readdirSync(dir2).filter((f) => f.includes('drop')).length, 0, 'html and svg side files both gone');
+  assert.equal(fs.readdirSync(dir2).filter((f) => f.includes('ghost')).length, 0, 'and so is the stray one');
+}
+
+// ── boot tidies drawings that belong to no selected model (and only then) ──
+{
+  const tidy = path.join(tmp, 'boot-tidy');
+  saveRun(tidy, 'wanted', PAGE, 10, 'p1');
+  saveRun(tidy, 'stray', PAGE, 20, 'p1');
+  mount(makeLlm(), { dir: tidy, runOnStart: false, targets: [{ provider: 'p1', model: 'wanted' }] });
+  assert.equal(fs.readdirSync(tidy).filter((f) => f.includes('stray')).length, 0, 'the stray is gone at boot');
+  assert.equal(fs.readdirSync(tidy).filter((f) => f.includes('wanted')).length, 2, 'the selected model is untouched');
+
+  // An empty selection must never be read as "delete everything".
+  const keepAll = path.join(tmp, 'boot-empty');
+  saveRun(keepAll, 'a', PAGE, 10, 'p1');
+  saveRun(keepAll, 'b', PAGE, 20, 'p2');
+  mount(makeLlm(), { dir: keepAll, runOnStart: false });
+  assert.equal(fs.readdirSync(keepAll).filter((f) => f.endsWith('.html')).length, 2, 'nothing is deleted without a selection');
+}
+
 // ── a provider failure is reported as text, not as a crash ────────────────
 {
   const failing = makeLlm({ failure: { code: 'MISSING_CREDENTIAL', message: 'no API key for route "deepseek-official"' } });

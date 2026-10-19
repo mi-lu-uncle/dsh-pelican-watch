@@ -68,6 +68,11 @@ account, the official API-key route, and any third-party provider you configured
 any number of models and **Save models**: from the next cycle on each selected
 model draws its own picture and gets its own band on the board.
 
+**The board shows exactly the selected models**, in the order they were saved —
+a band never jumps around. Unticking a model and saving **deletes its drawings**:
+anything the board cannot show is only invisible dead weight on disk, and these
+probe drawings are meant to be re-drawn anyway. The save toast says how many went.
+
 A model id is not unique: the signed-in account and a third-party provider can
 both serve `deepseek-flash`. A band is therefore a **provider + model** pair, and
 it carries the provider's display name next to the model name — two providers

@@ -378,14 +378,20 @@ const 看大图Label = '看大图';
     'and the pair is one of the selected targets');
 }
 
-// ── 1g. a history-only band offers no probe ────────────────────────────────
-// Its model is no longer selected, so a probe request would be refused.
+// ── 1g. a model removed from the selection leaves the board ────────────────
+// Its drawings are deleted by the host when the selection is saved, so a band
+// for it would only be a ghost; the board shows the selected models, in order.
 {
   payload = { ...basePayload, targets: [], images: IMAGES, summary: SUMMARY };
+  const out = await mount();
+  assert.equal(seen.tags.filter((tag) => tag === 'section').length, 0, 'no band without a selected model');
+  assert.equal(seen.buttons.filter((b) => b.title === 只测Hint).length, 0, 'and nothing to probe');
+  assert.ok(out.includes('还没有选模型'), 'the empty state explains the selection instead');
+
+  payload = { ...basePayload, targets: [TARGETS[2], TARGETS[0]], images: IMAGES, summary: SUMMARY };
   await mount();
-  assert.equal(seen.buttons.filter((b) => b.title === 只测Hint).length, 0,
-    'bands that are only history cannot be probed');
-  assert.equal(seen.tags.filter((tag) => tag === 'section').length, SUMMARY.length, 'they still render');
+  const order = seen.tags.filter((tag) => tag === 'h3').length;
+  assert.equal(order, 2, 'one band per selected model, nothing else');
 }
 
 // ── 2. the gear opens the settings modal, which holds every action ──────────
