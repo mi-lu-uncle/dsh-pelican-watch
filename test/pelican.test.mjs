@@ -126,12 +126,9 @@ try {
   assert.equal(imgRes.headers['x-content-type-options'], 'nosniff');
   assert.ok(String(imgRes.body).startsWith('<svg'), 'svg body served');
 
-  // raw route serves the page source as text/plain (rendered via sandboxed iframe)
-  const rawRes = fakeRes();
-  await routes['/api/pelican-watch/raw'].handler(req('GET', `/api/pelican-watch/raw?id=${encodeURIComponent(payload.images[0].id)}`), rawRes);
-  assert.equal(rawRes.code, 200);
-  assert.ok(String(rawRes.headers['content-type']).startsWith('text/plain'));
-  assert.ok(String(rawRes.body).includes('<!doctype html>'));
+  // there is no raw-page route: the panel shows the drawing as an image only,
+  // because the saved page carries the model's prose around the SVG
+  assert.equal(routes['/api/pelican-watch/raw'], undefined, 'no raw page route to leak prose into the viewer');
 
   // traversal attempts are rejected
   for (const evil of ['..%2F..%2Fetc%2Fpasswd', '..', 'a/b', '%2e%2e']) {

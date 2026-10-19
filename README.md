@@ -25,8 +25,8 @@ models**:
   flight, how long the slowest has waited (m:ss) and the timeout cap (m:ss), so a
   slow model and a stuck one are told apart at a glance.
 - **One gear button** — the panel's own top-right corner opens a settings sheet:
-  pick models, probe now, open one drawing's original page. The board below stays
-  pure viewing, so nothing has to be clicked to be read.
+  pick models, probe now, see one drawing bigger. The board below stays pure
+  viewing, so nothing has to be clicked to be read.
 - **Stop it, retune it** — that same sheet can **pause / resume automatic
   probing**, change the **interval** (1–1440 minutes), and **stop the pass that is
   running right now**: requests in flight are aborted, models that had not started
@@ -155,7 +155,8 @@ the finding**, and no digit has to stand in for them.
 The numbers that remain on the board are not grades, just facts: how many runs,
 average duration, when the newest drawing landed, and how many runs came back
 without a drawing. `没有出图` means the request returned but carried no usable
-SVG (typically a refusal); the raw answer is still saved so you can read it.
+SVG (typically a refusal). The raw answer is stored on disk next to the SVG,
+  but the panel never renders it — clicking a drawing shows the picture alone.
 
 ## Storage
 
@@ -172,16 +173,17 @@ Deleting files there is safe; the panel always lists what is on disk.
 ## Privacy & safety
 
 - Every route is same-origin fenced like other plugin surfaces.
-- Generated pages are served as `text/plain` and rendered inside a
-  `sandbox`-less iframe (`sandbox=""`), so model output can never execute
-  scripts in the app origin; SVG previews are served with
-  `x-content-type-options: nosniff`.
+- Drawings are served as `image/svg+xml` with `x-content-type-options: nosniff`
+  and a `default-src 'none'` CSP, and are only ever shown through `<img>`: the
+  model's surrounding prose, markdown fences and any `<script>` are never
+  rendered, and nothing from a model can execute in the app origin. There is no
+  route that serves the stored page as HTML.
 
 ## Layout
 
 | File | Role |
 |---|---|
-| `lib/index.js` | Host half: multi-model scheduler, storage, scoring, `/api/pelican-watch/*` routes |
+| `lib/index.js` | Host half: multi-model scheduler, schedule control, storage, `/api/pelican-watch/*` routes |
 | `lib/client.js` | Client half: the flat board (one band per model with all its drawings) plus the gear-opened settings sheet (React) |
 | `cordis.patch.yml` | Bundle patch that mounts the package as one host row |
 | `package.json` | npm metadata + `dsh.bundle`/`dsh.client`/`dsh.compatibility` |

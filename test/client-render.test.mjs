@@ -139,11 +139,16 @@ const CATALOG = {
 };
 
 let payload = basePayload;
-globalThis.fetch = async (url) => ({
-  ok: true, status: 200,
-  json: async () => (String(url).includes('/catalog') ? CATALOG : payload),
-  text: async () => '<!doctype html><html></html>',
-});
+const fetched = [];
+globalThis.fetch = async (url) => {
+  fetched.push(String(url));
+  return {
+    ok: true,
+    status: 200,
+    json: async () => (String(url).includes('/catalog') ? CATALOG : payload),
+    text: async () => '<!doctype html><html></html>',
+  };
+};
 
 const reset = () => {
   hookIndex = 0; pendingEffects = [];
@@ -161,6 +166,17 @@ async function mount(props = {}) {
   reset();
   out = draw(props);
   return out;
+}
+
+/** Press the first button matching a predicate (e.g. the drawings themselves). */
+async function pressWhere(match, props = {}) {
+  const button = seen.buttons.find(match);
+  assert.ok(button, 'a matching button exists');
+  assert.equal(typeof button.handler, 'function', 'it is clickable');
+  button.handler();
+  await settle();
+  reset();
+  return draw(props);
 }
 
 /** Press a button by (substring of) its label, let the request land, redraw. */
@@ -195,11 +211,31 @@ async function press(label, props = {}) {
   assert.ok(seen.buttons.some((b) => b.label.includes('全部检测一遍')), 'the header offers the manual probe');
   assert.ok(seen.buttons.some((b) => b.label.includes('设置')), 'the header offers the gear');
   assert.ok(seen.buttons
-    .filter((b) => b.title === '看原始页面').length === IMAGES.length, 'each drawing opens the bigger view');
+    .filter((b) => b.title === '看大图').length === IMAGES.length, 'each drawing opens the bigger view');
   assert.ok(seen.buttons
-    .filter((b) => b.title !== '看原始页面' && !b.label.includes('全部检测一遍') && !b.label.includes('设置')).length === 0,
+    .filter((b) => b.title !== '看大图' && !b.label.includes('全部检测一遍') && !b.label.includes('设置')).length === 0,
     'nothing else in the panel is clickable');
   assert.ok(!out.includes('检测节奏') && !out.includes('保存间隔'), 'the settings modal stays closed');
+}
+
+// ── 1b. clicking a drawing opens the picture — never the model's prose ──────
+// The saved page holds the model's whole answer (an intro sentence, a ```html
+// fence, then the SVG), so rendering that page put text next to the drawing.
+// The viewer must fetch the extracted SVG instead.
+{
+  payload = basePayload;
+  fetched.length = 0;
+  await mount();
+  const tiles = seen.imgs.length;
+  assert.equal(tiles, IMAGES.length, 'the board previews each drawing once');
+  const out = await pressWhere((b) => b.title === '看大图');
+  assert.equal(seen.imgs.length, tiles + 1, 'the viewer adds exactly one image');
+  assert.ok(seen.imgs[seen.imgs.length - 1].startsWith('/api/pelican-watch/image?id='),
+    'and it is the drawing served as an image');
+  assert.ok(!out.includes('<iframe'), 'no iframe: the page HTML is never rendered');
+  assert.ok(!fetched.some((url) => url.includes('/raw')), 'the raw page is never fetched');
+  assert.ok(out.includes('只测这个'), 'the viewer still offers a per-model probe');
+  assert.ok(!/function|=>/.test(out), 'no stray source text in the viewer');
 }
 
 // ── 2. the gear opens the settings modal, which holds every action ──────────
