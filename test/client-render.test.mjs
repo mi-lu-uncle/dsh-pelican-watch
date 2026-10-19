@@ -123,7 +123,7 @@ const SUMMARY = [
 ];
 const basePayload = {
   ok: true, images: IMAGES, targets: TARGETS, summary: SUMMARY,
-  maxImages: 12, intervalMinutes: 30, model: '', running: false, runningModel: null,
+  maxImages: 10, intervalMinutes: 30, model: '', running: false,
   inflight: [], inflightSince: {}, startedAt: null, done: 0, total: 0,
   providerNames: { 'deepseek-account': 'DeepSeek 账号', taotoken: 'taotoken' },
   errors: { 'taotoken|deepseek-v4-flash': '超过 300 秒没有返回（可在插件配置里调大 timeoutSeconds）' },
@@ -153,8 +153,8 @@ const CATALOG = {
 
 let payload = basePayload;
 const fetched = [];
-globalThis.fetch = async (url) => {
-  fetched.push(String(url));
+globalThis.fetch = async (url, init = {}) => {
+  fetched.push({ url: String(url), body: typeof init.body === 'string' ? JSON.parse(init.body) : null });
   return {
     ok: true,
     status: 200,
@@ -209,6 +209,7 @@ async function press(label, props = {}) {
   const out = await mount();
   assert.ok(!/undefined|NaN/.test(out), 'no undefined/NaN leaked into the board');
   assert.ok(out.includes('每个模型的全部画作'), 'board heading is rendered');
+  assert.ok(out.includes('每个模型保留最新 10 张'), 'the history cap is shown, per model');
   for (const target of TARGETS) assert.ok(out.includes(target.model), `band for ${target.model}`);
   assert.equal(seen.imgs.length, IMAGES.length, 'one inline preview per saved drawing');
   assert.ok(seen.imgs.every((src) => src.startsWith('/api/pelican-watch/image?id=')), 'previews use the same-origin image route');
@@ -219,15 +220,19 @@ async function press(label, props = {}) {
   assert.ok(out.includes('超过 300 秒没有返回'), 'the timeout reason is printed on the page');
   assert.ok(out.includes('>超时<'), 'and a timeout is labelled as one');
   assert.ok(out.includes('145.0s') && out.includes('132.0s'), 'per-drawing duration is printed');
-  // The whole click budget of the panel: two header actions + one button per
-  // drawing (which merely opens the bigger sandboxed view — optional).
-  assert.equal(seen.buttons.length, 2 + IMAGES.length, 'only the header actions and one button per drawing');
+  // The whole click budget of the panel: two header actions, one probe button
+  // per *selected* band, and one button per drawing (the bigger view — optional).
+  const bandCount = TARGETS.length;
+  assert.equal(seen.buttons.length, 2 + bandCount + IMAGES.length,
+    'header actions, one probe per selected band, one per drawing');
   assert.ok(seen.buttons.some((b) => b.label.includes('全部检测一遍')), 'the header offers the manual probe');
   assert.ok(seen.buttons.some((b) => b.label.includes('设置')), 'the header offers the gear');
+  assert.equal(seen.buttons.filter((b) => b.title === '只测这个').length, bandCount,
+    'each selected model can be probed on its own');
+  assert.equal(seen.buttons.filter((b) => b.title === '看大图').length, IMAGES.length,
+    'each drawing opens the bigger view');
   assert.ok(seen.buttons
-    .filter((b) => b.title === '看大图').length === IMAGES.length, 'each drawing opens the bigger view');
-  assert.ok(seen.buttons
-    .filter((b) => b.title !== '看大图' && !b.label.includes('全部检测一遍') && !b.label.includes('设置')).length === 0,
+    .filter((b) => !['看大图', '只测这个'].includes(b.title) && !b.label.includes('全部检测一遍') && !b.label.includes('设置')).length === 0,
     'nothing else in the panel is clickable');
   assert.ok(!out.includes('检测节奏') && !out.includes('保存间隔'), 'the settings modal stays closed');
 }
@@ -264,7 +269,7 @@ async function press(label, props = {}) {
   assert.ok(seen.imgs[seen.imgs.length - 1].startsWith('/api/pelican-watch/image?id='),
     'and it is the drawing served as an image');
   assert.ok(!out.includes('<iframe'), 'no iframe: the page HTML is never rendered');
-  assert.ok(!fetched.some((url) => url.includes('/raw')), 'the raw page is never fetched');
+  assert.ok(!fetched.some((entry) => entry.url.includes('/raw')), 'the raw page is never fetched');
   assert.ok(out.includes('只测这个'), 'the viewer still offers a per-model probe');
   assert.ok(!/function|=>/.test(out), 'no stray source text in the viewer');
 }
@@ -332,6 +337,33 @@ async function press(label, props = {}) {
     assert.ok(out.length > 100, `${label}: something rendered`);
     assert.ok(!/<button[^>]*>[^<]*undefined/.test(out), `${label}: no undefined label`);
   }
+}
+
+// ── 1f. a band's ▷ probes that model only ──────────────────────────────────
+{
+  payload = basePayload;
+  fetched.length = 0;
+  await mount();
+  const probes = seen.buttons.filter((b) => b.title === '只测这个');
+  assert.equal(probes.length, TARGETS.length, 'each selected model has its own probe button');
+  assert.ok(probes.every((b) => b.label.includes('只测')), 'and it says what it does, not just a triangle');
+  await pressWhere((b) => b.title === '只测这个');
+  const calls = fetched.filter((entry) => entry.url.endsWith('/api/pelican-watch/run'));
+  assert.equal(calls.length, 1, 'pressing it starts exactly one pass');
+  assert.deepEqual(Object.keys(calls[0].body).sort(), ['model', 'provider'],
+    'the request names the band it came from');
+  assert.ok(TARGETS.some((t) => t.model === calls[0].body.model && t.provider === calls[0].body.provider),
+    'and the pair is one of the selected targets');
+}
+
+// ── 1g. a history-only band offers no probe ────────────────────────────────
+// Its model is no longer selected, so a probe request would be refused.
+{
+  payload = { ...basePayload, targets: [], images: IMAGES, summary: SUMMARY };
+  await mount();
+  assert.equal(seen.buttons.filter((b) => b.title === '只测这个').length, 0,
+    'bands that are only history cannot be probed');
+  assert.equal(seen.tags.filter((tag) => tag === 'section').length, SUMMARY.length, 'they still render');
 }
 
 // ── 2. the gear opens the settings modal, which holds every action ──────────

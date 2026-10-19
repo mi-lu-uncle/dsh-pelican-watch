@@ -26,15 +26,17 @@ models**:
   flight, how long the slowest has waited (m:ss) and the timeout cap (m:ss), so a
   slow model and a stuck one are told apart at a glance.
 - **One gear button** — the panel's own top-right corner opens a settings sheet:
-  pick models, probe now, see one drawing bigger. The board below stays pure
-  viewing, so nothing has to be clicked to be read.
+  pick models, pause or retune the schedule, stop the pass, see one drawing
+  bigger. The board below stays pure viewing, so nothing has to be clicked to be
+  read. To probe **one** model, press the `▷` on its band: one request, nothing
+  else spends.
 - **Stop it, retune it** — that same sheet can **pause / resume automatic
   probing**, change the **interval** (1–1440 minutes), and **stop the pass that is
   running right now**: requests in flight are aborted, models that had not started
   are skipped without a request being sent. Pausing is written to
   `settings.json` immediately and survives a restart, so a plugin you only probe
   by hand never costs a token on its own.
-- **Bounded history** — keeps the newest N drawings **per model** (12 by
+- **Bounded history** — keeps the newest N drawings **per model** (10 by
   default); the cap never gets divided between the models you are probing, and
   two providers serving the same model id keep separate histories. Same prompt,
   same model, over days: degradation shows up as worse structure, refusals
@@ -125,7 +127,7 @@ Defaults match the usual profile setup; override any of them on a
     #   - { provider: deepseek-account, model: deepseek-flash }
     #   - { provider: taotoken, model: glm-5.3-flash }
     intervalMinutes: 30                  # drawing cadence
-    maxImages: 12                        # drawings kept per model (1–100; ≈6h at 30min)
+    maxImages: 10                        # drawings kept per model (1–100; ≈5h at 30min)
     timeoutSeconds: 300                  # per-request ceiling (5–3600); raise it for slow models
     concurrency: 3                       # how many models are probed at once
     # maxTokens: 8192                    # optional; unset by default (see below)
