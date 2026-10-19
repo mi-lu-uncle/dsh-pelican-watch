@@ -31,7 +31,9 @@ dsh plugin --profile desktop add /absolute/path/to/dsh-pelican-watch
 
 ## 选择模型
 
-面板右上角「设置」里的「检测的模型」会列出：列出你 DSH profile 里发现的每个 provider，以及它提供的模型（调该 provider 自己的 `/models`，并与 profile 里已有的清单合并）。勾选任意多个后点**保存模型**——从下一个周期起，每个选中的模型各画一张，并在看板上各占一条横幅。
+面板右上角「设置」里的「检测的模型」会列出 **DSH 里注册的每一个提供方**（包括登录后的「DeepSeek 账号」、官方 API Key 路由、以及你在 profile 里配的第三方 provider），以及每个提供方公布的全部模型，按提供方的显示名分组。勾选任意多个后点**保存模型**——从下一个周期起，每个选中的模型各画一张，并在看板上各占一条横幅。
+
+插件本身不碰任何密钥：调用走的是 DSH 的模型服务（`ctx.llm`），凭据由 DSH 解析 —— 所以「DeepSeek 账号」这种没有 API Key、只靠登录的提供方也能直接检测，第三方 provider 只要在 DSH 里能用，这里就能选。某个提供方列不出模型（没登录、key 失效）时，它仍会出现在列表里并写明原因。
 
 这份选择存在 `dir/settings.json`，调度器以它为准；`config.model` / `config.targets` 只用于第一次运行的初始值。每轮最多探测 12 个模型，**`concurrency` 个同时进行**（默认 3 个），每个模型各画一张。
 
@@ -56,12 +58,12 @@ dsh plugin --profile desktop add /absolute/path/to/dsh-pelican-watch
 ```yaml
 - id: pelican-watch
   config:
-    model: glm-5.3-flash                 # 初始模型（面板里的选择优先）
-    baseURL: https://taotoken.net/api/v1 # OpenAI 兼容端点
-    apiKeyEnv: TAOTOKEN_API_KEY          # 存放 API Key 的环境变量…
-    # apiKey: sk-…                       # …或者直接把 key 写在这里
+    # 初始选择（面板里选过之后以面板为准）
+    provider: deepseek-account           # DSH 的提供方路由；默认 deepseek-account
+    model: deepseek-flash                # 模型 id
     # targets:                           # 可选：一次给多个模型做初始值
-    #   - { provider: taotoken, baseURL: https://taotoken.net/api/v1, apiKeyEnv: TAOTOKEN_API_KEY, model: glm-5.3-flash }
+    #   - { provider: deepseek-account, model: deepseek-flash }
+    #   - { provider: taotoken, model: glm-5.3-flash }
     intervalMinutes: 30                  # 作画间隔
     maxImages: 12                        # 每个模型的历史深度（30 分钟一张 ≈ 6 小时）
     timeoutSeconds: 180                  # 单个请求超时；慢模型可调大
@@ -77,17 +79,15 @@ dsh plugin --profile desktop add /absolute/path/to/dsh-pelican-watch
 
 提示词要求动效必须用 SVG 声明式动画（`<animate>` / `<animateTransform>`），这不是偏好：面板用 `<img>` 显示提取出来的 SVG，浏览器在"SVG 当图片"时**不播放 CSS 动画、也永远不执行脚本**，只有 SMIL 会动。如果是自己改提示词，`<style>` 里的 `@keyframes` 或 `<script>` 驱动的动画都会变成静止画面。
 
-## API Key
+## 凭据
 
-Key 在调用时按以下顺序解析：
+这个插件**没有**自己的 API Key 配置：它通过 DSH 的模型服务（`ctx.llm`）调用模型，凭据完全由 DSH 解析——API Key 路由用它自己存的 key，`deepseek-account` 用你登录的账号。所以：
 
-1. 配置里的 `apiKey`；
-2. 环境变量 `process.env[apiKeyEnv]`（默认 `TAOTOKEN_API_KEY`）；
-3. DSH 自己的凭据库——`~/.dsh/.credentials.yaml` 里 `refs:` 的同名条目（可用 `credentialsFile` 改路径）。
+- 想检测哪个模型，先在 DSH 里让那个提供方可用（设置 → 模型），这里就能直接选；
+- 换 key、重新登录都不用改插件配置；
+- 面板和接口里**不会出现任何密钥**（插件根本不读它）。
 
-第 3 条的意义：桌面版 DSH 从访达/程序坞启动，**不继承**你 shell 里 export 的环境变量；而通过 DSH 配置的 provider key 本来就已记在 `refs:` 里（键名就是该 provider 的 `apiKeyEnv`），所以开箱即用、无需重复配置。
-
-三者都没有时跳过本次作画，并在面板显示原因（`缺少 API Key：…`）；补上任意一种，下一次定时作画即正常进行。
+调不通时面板会按失败原因说人话：`需要先在 DSH 里登录 DeepSeek 账号`、`这个提供方还没有配置凭据`、`被限流了`、`额度不足`、`超出模型的上下文窗口` 等。
 
 ## 只展示，不打分
 
@@ -118,7 +118,7 @@ Key 在调用时按以下顺序解析：
 
 | 文件 | 作用 |
 |---|---|
-| `lib/index.js` | Host 半：多模型调度器、调度控制、存储、`/api/pelican-watch/*` 路由 |
+| `lib/index.js` | Host 半：多模型调度器、调度控制、存储、`/api/pelican-watch/*` 路由（模型调用走 `ctx.llm`，不碰密钥） |
 | `lib/client.js` | Client 半：平铺看板（每个模型一条横幅 + 它的全部画作）+ 右上角「设置」窗（React） |
 | `cordis.patch.yml` | Bundle 补丁，把本包作为一个 host 行挂载 |
 | `package.json` | npm 元数据 + `dsh.bundle`/`dsh.client`/`dsh.compatibility` |

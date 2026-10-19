@@ -58,11 +58,19 @@ Note: `link:`-installed plugins are not watched by HMR, so editing
 
 ## Choosing models
 
-The gear in the panel's top-right corner opens the settings sheet: every provider found in your DSH profiles, with
-the models it serves (its own `/models` endpoint, merged with whatever the
-profile already lists). Tick any number of models and **Save models** — from the next
-cycle on each selected model draws its own picture and gets its own band on the
-board.
+The gear in the panel's top-right corner opens the settings sheet, which lists
+**every provider route registered in DSH** — the signed-in 「DeepSeek 账号」
+account, the official API-key route, and any third-party provider you configured
+— grouped by the display name DSH uses, each with the models it advertises. Tick
+any number of models and **Save models**: from the next cycle on each selected
+model draws its own picture and gets its own band on the board.
+
+The plugin never touches key material: calls go through DSH's model service
+(`ctx.llm`), which resolves the credential itself. That is why the
+account-backed provider (no API key at all, just a signed-in account) can be
+probed here, and why any provider that works in DSH works here. A provider that
+cannot list its models (not signed in, expired key) still appears, with the
+reason attached.
 
 That selection lives in `dir/settings.json` and is what the scheduler uses;
 `config.model` / `config.targets` only seed the first run. The same file holds
@@ -104,12 +112,12 @@ Defaults match the usual profile setup; override any of them on a
 ```yaml
 - id: pelican-watch
   config:
-    model: glm-5.3-flash                 # seed model (the panel's selection wins)
-    baseURL: https://taotoken.net/api/v1 # OpenAI-compatible endpoint
-    apiKeyEnv: TAOTOKEN_API_KEY          # env var holding the API key…
-    # apiKey: sk-…                       # …or put the key here directly
+    # initial selection (the panel's picker wins once used)
+    provider: deepseek-account           # a DSH provider route; account by default
+    model: deepseek-flash                # model id
     # targets:                           # optional: seed several models at once
-    #   - { provider: taotoken, baseURL: https://taotoken.net/api/v1, apiKeyEnv: TAOTOKEN_API_KEY, model: glm-5.3-flash }
+    #   - { provider: deepseek-account, model: deepseek-flash }
+    #   - { provider: taotoken, model: glm-5.3-flash }
     intervalMinutes: 30                  # drawing cadence
     maxImages: 12                        # history depth (per model ≈6h at 30min)
     timeoutSeconds: 180                  # per-request ceiling; raise it for slow models
@@ -130,22 +138,21 @@ extracted SVG through an `<img>`, and a browser running an SVG *as an image*
 moves. An animated picture driven by `@keyframes` or `<script>` will look frozen
 here.
 
-## API key
+## Credentials
 
-The key is resolved at call time, in this order:
+This plugin has **no** API-key configuration of its own. It calls models through
+DSH's model service (`ctx.llm`), which resolves the credential: an API-key route
+uses the key DSH stores for it, `deepseek-account` uses the account you signed
+in with. So:
 
-1. a literal `apiKey` in config;
-2. `process.env[apiKeyEnv]` (default `TAOTOKEN_API_KEY`);
-3. the same name in DSH's own credential store — `refs:` in
-   `~/.dsh/.credentials.yaml` (override the path with `credentialsFile`).
+- to probe a model, first make its provider usable in DSH (Settings → Models) —
+  then it is selectable here;
+- rotating a key or signing in again needs no plugin change;
+- no key ever reaches the panel or its routes (the plugin never reads one).
 
-Step 3 is why a DSH-configured provider key works with no extra setup: the
-desktop app is launched from Finder/Dock and therefore does **not** inherit
-environment variables exported in a shell, while `refs:` already holds the key
-under the provider's `apiKeyEnv` name.
-
-With none of the three the run is skipped and the panel shows the reason
-(`缺少 API Key：…`) — set any one of them and the next scheduled run proceeds.
+When a call fails the panel says what to do: `需要先在 DSH 里登录 DeepSeek 账号`,
+`这个提供方还没有配置凭据`, `被限流了`, `额度不足`,
+`超出模型的上下文窗口`.
 
 ## Display only — no scoring
 

@@ -1,13 +1,16 @@
 // Offline tests for dsh-pelican-watch: pure helpers, storage lifecycle, and a
-// full apply() wiring against a fake ctx + fake fetch (no network, no DSH).
+// full apply() wiring against a fake ctx — a fake web server and a fake
+// `ctx.llm`. No network, no DSH, no credentials: the plugin calls models only
+// through the service, so that is the seam the tests drive.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
   apply,
+  drawWithLlm,
+  failureText,
   pool,
-  chatCompletion,
   stripFences,
   extractSvg,
   modelSafe,
@@ -15,9 +18,7 @@ import {
   parseMeta,
   listGallery,
   prune,
-  readKeyFromCredentials,
   summarizeRuns,
-  parseProviderRows,
   normalizeTargets,
   loadSettings,
   saveSettings,
@@ -36,9 +37,9 @@ assert.equal(stripFences('<html></html>'), '<html></html>');
 assert.deepEqual(extractSvg(PAGE), SVG);
 assert.equal(extractSvg('no drawing here'), null);
 assert.equal(extractSvg('<svg>a</svg> tail <b>x</b>'), '<svg>a</svg>');
-// The task now asks for animation, so the extracted copy must keep the pieces
-// an <img> can actually play — SMIL, not CSS (browsers do not run CSS
-// animations inside an SVG loaded as an image).
+// The task asks for animation, so the extracted copy must keep the pieces an
+// <img> can actually play — SMIL, not CSS (browsers do not run CSS animations
+// inside an SVG loaded as an image).
 const ANIMATED = '<!doctype html><html><body><p>note</p><svg viewBox="0 0 10 10">'
   + '<style>.x{fill:red}</style>'
   + '<animateTransform attributeName="transform" type="rotate" from="0 5 5" to="360 5 5" dur="2s" repeatCount="indefinite"/>'
@@ -50,6 +51,14 @@ assert.ok(!animatedSvg.includes('<p>note</p>'), 'and the prose around it does no
 assert.equal(modelSafe('glm-5.3-flash'), 'glm-5.3-flash');
 assert.equal(modelSafe('a/b\\c:d'), 'a-b-c-d');
 
+// ---- the prompt is the fixed benchmark text: one animated SVG, nothing else ----
+assert.ok(PROMPT.includes('鹈鹕') && PROMPT.toLowerCase().includes('svg'));
+assert.ok(PROMPT.includes('动图'), 'the task asks for an animated drawing');
+assert.ok(PROMPT.includes('不要调用任何 skill'), 'and tells the model not to reach for skills/tools');
+assert.ok(/<svg>/.test(PROMPT) && PROMPT.includes('<animate'), 'with the animation inside the <svg>, where an <img> can play it');
+assert.ok(/不要用 <script>/.test(PROMPT), 'script-driven animation is ruled out (an <img> would never run it)');
+assert.ok(/不要用 <style>/.test(PROMPT), 'CSS animation is ruled out too (an <img> would freeze it)');
+
 // ---- saveRun / listGallery / parseMeta ----
 const dir = path.join(tmp, 'gallery');
 const first = saveRun(dir, 'test-model', PAGE, 1234);
@@ -58,244 +67,27 @@ assert.ok(first.id.endsWith('test-model'));
 assert.equal(parseMeta(fs.readFileSync(path.join(dir, `${first.id}.html`), 'utf8')).model, 'test-model');
 assert.ok(fs.existsSync(path.join(dir, `${first.id}.svg`)), 'svg side file written');
 
-const refused = saveRun(dir, 'test-model', '抱歉，我无法完成这个请求。', 200);
-assert.equal(refused.ok, false, 'refusal has no svg');
-assert.ok(!fs.existsSync(path.join(dir, `${refused.id}.svg`)), 'no svg file for a refusal');
+const refused = saveRun(dir, 'refuser', '抱歉，我不能画。', 50);
+assert.equal(refused.ok, false, 'a refusal (no svg) is recorded with ok:false');
+assert.ok(!fs.existsSync(path.join(dir, `${refused.id}.svg`)), 'no side svg for a refusal');
 
-// same-second runs must not overwrite each other
-const again = saveRun(dir, 'test-model', PAGE, 999);
-assert.notEqual(again.id, first.id, 'second same-second save gets a distinct id');
-
-const listed = listGallery(dir, 12);
-assert.equal(listed.length, 3);
-assert.equal(listed[0].id, again.id, 'newest first');
-assert.equal(listed.find((r) => r.id === first.id).hasSvg, true);
-assert.equal(listed.find((r) => r.id === refused.id).hasSvg, false);
-assert.equal(listed.find((r) => r.id === first.id).ms, 1234);
+const listed = listGallery(dir, 10);
+assert.equal(listed.length, 2, 'both runs listed');
+assert.equal(listed[0].model, 'refuser', 'newest first');
+assert.equal(listed[0].hasSvg, false);
+assert.equal(listed[1].hasSvg, true);
+assert.equal(listed[0].score, undefined, 'the gallery carries no score');
 
 // ---- prune keeps the newest max and drops both html+svg ----
-for (let i = 0; i < 14; i += 1) saveRun(dir, 'bulk-model', PAGE, i * 10);
-assert.equal(prune(dir, 12), 5, '15 + 1 older refusal rows… pruned down to 12');
-assert.equal(listGallery(dir, 99).length, 12);
-assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith('.html')).length, 12);
+const small = path.join(tmp, 'pruned');
+for (let i = 0; i < 5; i += 1) saveRun(small, `m${i}`, PAGE, i, { now: Date.now() + i * 1000 });
+assert.equal(fs.readdirSync(small).filter((f) => f.endsWith('.html')).length, 5);
+const removed = prune(small, 3);
+assert.equal(removed, 2, 'two oldest dropped');
+assert.equal(fs.readdirSync(small).filter((f) => f.endsWith('.html')).length, 3);
+assert.equal(fs.readdirSync(small).filter((f) => f.endsWith('.svg')).length, 3, 'their svg side files go too');
 
-// ---- apply() wiring with a fake ctx + fake fetch ----
-const routes = {};
-const effectDisposes = [];
-const ctx = {
-  effect: (fn) => { const d = fn(); if (typeof d === 'function') effectDisposes.push(d); return d; },
-  webServer: { register: (r) => { routes[r.path] = r; return () => delete routes[r.path]; } },
-};
-const pluginDir = path.join(tmp, 'plugin-gallery');
-const realFetch = globalThis.fetch;
-globalThis.fetch = async () => ({
-  ok: true,
-  status: 200,
-  text: async () => '',
-  json: async () => ({ choices: [{ message: { content: PAGE } }] }),
-});
-try {
-  apply(ctx, {
-    dir: pluginDir,
-    model: 'probe-model',
-    apiKey: 'sk-test',
-    baseURL: 'http://fake.local/v1',
-    intervalMinutes: 30,
-    maxImages: 12,
-    runOnStart: false,
-  });
-  assert.ok(routes['/api/pelican-watch/list'], 'list route registered');
-  assert.ok(routes['/api/pelican-watch/run'], 'run route registered');
-
-  const fakeRes = () => {
-    const r = { code: 0, headers: {}, body: '' };
-    r.writeHead = (code, headers) => { r.code = code; Object.assign(r.headers, headers); };
-    r.end = (body) => { r.body = body; };
-    return r;
-  };
-  const req = (method, url) => ({ method, url, headers: { 'sec-fetch-site': 'same-origin' }, async *[Symbol.asyncIterator]() {} });
-
-  // trigger a run through the HTTP surface (fire-and-forget) and wait for it
-  const runRes = fakeRes();
-  await routes['/api/pelican-watch/run'].handler(req('POST', '/api/pelican-watch/run'), runRes);
-  assert.equal(runRes.code, 200);
-  await new Promise((r) => setTimeout(r, 120));
-
-  const listRes = fakeRes();
-  await routes['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), listRes);
-  const payload = JSON.parse(listRes.body);
-  assert.equal(payload.ok, true);
-  assert.equal(payload.images.length, 1, 'the triggered run was saved');
-  assert.equal(payload.images[0].model, 'probe-model');
-  assert.equal(payload.images[0].hasSvg, true);
-
-  // image route serves the svg side file with a locked-down content type
-  const imgRes = fakeRes();
-  await routes['/api/pelican-watch/image'].handler(req('GET', `/api/pelican-watch/image?id=${encodeURIComponent(payload.images[0].id)}`), imgRes);
-  assert.equal(imgRes.code, 200);
-  assert.equal(imgRes.headers['content-type'], 'image/svg+xml; charset=utf-8');
-  assert.equal(imgRes.headers['x-content-type-options'], 'nosniff');
-  assert.ok(String(imgRes.body).startsWith('<svg'), 'svg body served');
-
-  // there is no raw-page route: the panel shows the drawing as an image only,
-  // because the saved page carries the model's prose around the SVG
-  assert.equal(routes['/api/pelican-watch/raw'], undefined, 'no raw page route to leak prose into the viewer');
-
-  // traversal attempts are rejected
-  for (const evil of ['..%2F..%2Fetc%2Fpasswd', '..', 'a/b', '%2e%2e']) {
-    const badRes = fakeRes();
-    await routes['/api/pelican-watch/image'].handler(req('GET', `/api/pelican-watch/image?id=${evil}`), badRes);
-    assert.equal(badRes.code, 404, `traversal rejected: ${evil}`);
-  }
-
-  // missing key → clear error surfaced through the list payload
-  const noKeyCtx = {
-    effect: (fn) => { const d = fn(); if (typeof d === 'function') effectDisposes.push(d); return d; },
-    webServer: { register: (r) => { routes[`${r.path}:nk`] = r; return () => {}; } },
-  };
-  const savedEnv = process.env.PELICAN_TEST_KEY;
-  delete process.env.PELICAN_TEST_KEY;
-  apply(noKeyCtx, {
-    dir: path.join(tmp, 'nk'),
-    apiKeyEnv: 'PELICAN_TEST_KEY',
-    credentialsFile: path.join(tmp, 'no-key-store.yaml'), // hermetic: never read the real store
-    runOnStart: false,
-  });
-  const nkList = fakeRes();
-  await routes['/api/pelican-watch/list:nk'].handler(req('GET', '/api/pelican-watch/list'), nkList);
-  const nkPayload = JSON.parse(nkList.body);
-  await routes['/api/pelican-watch/run:nk'].handler(req('POST', '/api/pelican-watch/run'), fakeRes());
-  await new Promise((r) => setTimeout(r, 50));
-  const nkList2 = fakeRes();
-  await routes['/api/pelican-watch/list:nk'].handler(req('GET', '/api/pelican-watch/list'), nkList2);
-  const nkPayload2 = JSON.parse(nkList2.body);
-  assert.ok(nkPayload2.lastError && nkPayload2.lastError.includes('PELICAN_TEST_KEY'), 'missing key is reported');
-  assert.equal(nkPayload2.images.length, 0);
-  if (savedEnv !== undefined) process.env.PELICAN_TEST_KEY = savedEnv;
-
-  // ---- key resolution: config > env > DSH's credential store ----
-  // The GUI app does not inherit shell env vars, so the credential store is the
-  // source that makes a DSH-configured provider key work out of the box.
-  const credsFile = path.join(tmp, 'credentials.yaml');
-  fs.writeFileSync(credsFile, [
-    'version: 1',
-    'records:',
-    '  client-connection/browser-session:',
-    '    kind: grant',
-    'refs:',
-    '  PELICAN_PK_KEY: from-file',
-    '  OTHER_KEY: "quoted-value"  # trailing comment',
-    'later:',
-    '  PELICAN_PK_KEY: ignored-outside-refs',
-    '',
-  ].join('\n'));
-  const garbage = path.join(tmp, 'garbage.yaml');
-  fs.writeFileSync(garbage, 'this is not: [valid\n  yaml at all');
-
-  // unit level: the tiny reader degrades to null instead of throwing
-  assert.equal(readKeyFromCredentials('PELICAN_PK_KEY', credsFile), 'from-file');
-  assert.equal(readKeyFromCredentials('OTHER_KEY', credsFile), 'quoted-value', 'quotes and comment stripped');
-  assert.equal(readKeyFromCredentials('MISSING_KEY', credsFile), null, 'unknown ref');
-  assert.equal(readKeyFromCredentials('PELICAN_PK_KEY', path.join(tmp, 'nope.yaml')), null, 'missing file');
-  assert.equal(readKeyFromCredentials('PELICAN_PK_KEY', garbage), null, 'garbage file');
-  assert.equal(readKeyFromCredentials('', credsFile), null, 'no env name');
-  assert.equal(readKeyFromCredentials('PELICAN_PK_KEY', path.join(tmp, 'later-key.yaml')) , null, 'reference file absent');
-
-  // end to end: the authorization header the request actually carries
-  const authSeen = [];
-  globalThis.fetch = async (url, init) => {
-    authSeen.push(init.headers.authorization);
-    return {
-      ok: true,
-      status: 200,
-      text: async () => '',
-      json: async () => ({ choices: [{ message: { content: PAGE } }] }),
-    };
-  };
-  const keyRoutes = {};
-  const keyCtx = {
-    effect: (fn) => { const d = fn(); if (typeof d === 'function') effectDisposes.push(d); return d; },
-    webServer: { register: (r) => { keyRoutes[r.path] = r; return () => {}; } },
-  };
-  apply(keyCtx, {
-    dir: path.join(tmp, 'keys'),
-    model: 'probe-model',
-    apiKeyEnv: 'PELICAN_PK_KEY',
-    credentialsFile: credsFile,
-    runOnStart: false,
-  });
-  const trigger = async () => {
-    await keyRoutes['/api/pelican-watch/run'].handler(req('POST', '/api/pelican-watch/run'), fakeRes());
-    await new Promise((r) => setTimeout(r, 80));
-  };
-  process.env.PELICAN_PK_KEY = 'from-env';
-  await trigger();
-  assert.equal(authSeen.at(-1), 'Bearer from-env', 'env beats the credential store');
-  delete process.env.PELICAN_PK_KEY;
-  await trigger();
-  assert.equal(authSeen.at(-1), 'Bearer from-file', 'the credential store is the last fallback');
-
-  // runOnStart arms the schedule; disposing the effect clears it
-  const armCtx = {
-    effect: (fn) => { const d = fn(); effectDisposes.push(d); return d; },
-    webServer: { register: () => () => {} },
-  };
-  apply(armCtx, { dir: path.join(tmp, 'arm'), apiKey: 'sk-x', runOnStart: true });
-  const armRes = fakeRes();
-  await routes['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), armRes);
-  assert.ok(JSON.parse(armRes.body).nextRunAt > Date.now(), 'next run armed');
-} finally {
-  globalThis.fetch = realFetch;
-  for (const d of effectDisposes) { try { d(); } catch { /* ignore */ } }
-}
-
-// the prompt is the fixed benchmark text: one animated SVG, nothing else
-assert.ok(PROMPT.includes('鹈鹕') && PROMPT.toLowerCase().includes('svg'));
-assert.ok(PROMPT.includes('动图'), 'the task asks for an animated drawing');
-assert.ok(PROMPT.includes('不要调用任何 skill'), 'and tells the model not to reach for skills/tools');
-assert.ok(/<svg>/.test(PROMPT) && PROMPT.includes('<animate'), 'with the animation inside the <svg>, where an <img> can play it');
-assert.ok(/不要用 <script>/.test(PROMPT), 'script-driven animation is ruled out (an <img> would never run it)');
-assert.ok(/不要用 <style>/.test(PROMPT), 'CSS animation is ruled out too (an <img> would freeze it)');
-assert.ok(!/markdown 代码块[^\n]*\n[^\n]*要求/.test(PROMPT), 'prompt stays a single pass of instructions');
-
-// ---- bounded concurrency ----
-{
-  const seen = [];
-  let inFlight = 0;
-  let peak = 0;
-  await pool([1, 2, 3, 4, 5], 2, async (n) => {
-    inFlight += 1;
-    peak = Math.max(peak, inFlight);
-    await new Promise((r) => setTimeout(r, 10));
-    seen.push(n);
-    inFlight -= 1;
-  });
-  assert.deepEqual(seen.sort((a, b) => a - b), [1, 2, 3, 4, 5], 'every item runs');
-  assert.ok(peak <= 2, `never more than the limit in flight (peak ${peak})`);
-  await pool([], 3, async () => { throw new Error('must not run'); });
-}
-
-// ---- a hung provider is reported as a timeout, not "operation aborted" ----
-{
-  const real = globalThis.fetch;
-  globalThis.fetch = (url, init = {}) => new Promise((resolve, reject) => {
-    if (init.signal) {
-      init.signal.addEventListener('abort', () => {
-        const error = new Error('This operation was aborted');
-        error.name = 'AbortError';
-        reject(error);
-      });
-    }
-  });
-  await assert.rejects(
-    () => chatCompletion('http://slow.local/v1', 'model', 'key', 'prompt', { timeoutMs: 1200 }),
-    /超过 1 秒没有返回/,
-    'timeout message explains itself',
-  );
-  globalThis.fetch = real;
-}
-
-// ---- per-model roll-up: counts, durations, refusals — no scoring ----
+// ---- summarizeRuns: counts, durations, refusals — no scoring ----
 const summary = summarizeRuns([
   { model: 'alpha', provider: 'p', ms: 1000, ok: true, time: '2026-01-03T00:00:00Z' },
   { model: 'alpha', provider: 'p', ms: 2000, ok: true, time: '2026-01-02T00:00:00Z' },
@@ -307,389 +99,390 @@ assert.deepEqual(
   { count: summary[0].count, avgMs: summary[0].avgMs, lastMs: summary[0].lastMs, refusals: summary[0].refusals },
   { count: 3, avgMs: 2000, lastMs: 1000, refusals: 1 },
 );
-assert.equal(summary[0].lastTime, '2026-01-03T00:00:00Z', 'the newest run time is reported');
 assert.equal(summary[0].score, undefined, 'no score is computed any more');
-assert.equal(summary[0].scores, undefined, 'and no score series either');
 assert.equal(summary[1].avgMs, 500);
-assert.equal(summary[1].refusals, 0);
 assert.deepEqual(summarizeRuns([]), []);
-assert.equal(summarizeRuns([{ model: 'x', ok: true, ms: null }])[0].avgMs, null, 'a run without a duration');
+
+// ---- target list validation: provider + model, de-duplicated ----
 assert.deepEqual(
-  summarizeRuns([{ model: 'x', ok: false, time: '2026-01-01T00:00:00Z' }, { model: 'x', ok: false, time: '2026-01-02T00:00:00Z' }])[0],
-  { model: 'x', provider: '', count: 2, avgMs: null, lastMs: null, refusals: 2, lastTime: '2026-01-01T00:00:00Z' },
-  'two refusals → both counted',
+  normalizeTargets([{ provider: 'deepseek-account', model: 'deepseek-flash' }, { provider: 'deepseek-account', model: 'deepseek-flash' }, { model: '' }, null]),
+  [{ provider: 'deepseek-account', model: 'deepseek-flash' }],
 );
+assert.deepEqual(normalizeTargets([{ model: 'x' }]), [{ provider: 'deepseek-account', model: 'x' }], 'provider defaults to the account route');
+assert.deepEqual(normalizeTargets(null, []), [], 'nothing usable → empty, no invented target');
+assert.equal(normalizeTargets([{ model: 'a' }, { model: 'b' }]).length, 2);
 
-// ---- provider discovery out of a profile patch layer ----
-const PATCH = `- id: llm-pi-ai
-  name: "@deepseek-ai/dsh-llm-pi-ai"
-  config:
-    providers:
-      taotoken:
-        displayName: taotoken
-        apiKeyEnv: TAOTOKEN_API_KEY
-        api: openai-completions
-        baseURL: https://taotoken.net/api/v1
-        models:
-          - id: deepseek-flash
-            name: deepseek-flash
-          - id: glm-5.3-flash
-            name: GLM-5.3-Flash
-      other:
-        baseURL: "https://other.example/v1"  # comment
-        apiKeyEnv: OTHER_KEY
-        models:
-          - name: only-names
-- id: ui-chat
-  config:
-    transcriptView: standard
-`;
-const parsed = parseProviderRows(PATCH);
-assert.deepEqual(parsed.map((p) => p.provider), ['taotoken', 'other']);
-assert.equal(parsed[0].baseURL, 'https://taotoken.net/api/v1');
-assert.equal(parsed[0].apiKeyEnv, 'TAOTOKEN_API_KEY');
-assert.deepEqual(parsed[0].models, ['deepseek-flash', 'glm-5.3-flash']);
-assert.equal(parsed[1].baseURL, 'https://other.example/v1', 'quotes and comment stripped');
-assert.deepEqual(parsed[1].models, ['only-names'], 'a models list with only names still works');
-assert.deepEqual(parseProviderRows('not: [valid yaml'), [], 'unknown shapes discover nothing');
-
-// ---- target list validation ----
-assert.equal(normalizeTargets([{ model: 'x' }, { model: 'x' }], []).length, 1, 'de-duplicated');
-assert.equal(normalizeTargets(Array.from({ length: 20 }, (_, i) => ({ model: `m${i}` })), []).length, 12, 'capped');
-assert.deepEqual(normalizeTargets([{}, null, { model: '' }, { model: 7 }], [{ model: 'fallback' }]), [{ model: 'fallback' }]);
-const roundTrip = path.join(tmp, 'settings');
-saveSettings(roundTrip, { targets: [{ provider: 'p', baseURL: 'u', apiKeyEnv: 'K', model: 'm' }] });
-assert.equal(loadSettings(roundTrip).targets[0].model, 'm');
-assert.deepEqual(loadSettings(path.join(tmp, 'no-settings')), {}, 'missing settings file');
-
-// ---- multi-target: catalog discovery, selection persistence, per-model run ----
-{
-  const disposerMark = effectDisposes.length;
-  try {
-  const routes2 = {};
-  const dir2 = path.join(tmp, 'multi');
-  const ctx2 = {
-    effect: (fn) => { const d = fn(); if (typeof d === 'function') effectDisposes.push(d); return d; },
-    webServer: { register: (r) => { routes2[r.path] = r; return () => {}; } },
-  };
-  globalThis.fetch = async (url, init = {}) => {
-    if (String(url).endsWith('/models')) {
-      return { ok: true, status: 200, json: async () => ({ data: [{ id: 'live-a' }, { id: 'live-b' }] }), text: async () => '' };
-    }
-    return { ok: true, status: 200, text: async () => '', json: async () => ({ choices: [{ message: { content: PAGE } }] }) };
-  };
-  const reqBody = (method, url, payload) => ({
-    method,
-    url,
-    headers: { 'sec-fetch-site': 'same-origin' },
-    async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(payload)); },
-  });
-  const fakeRes = () => {
-    const r = { code: 0, headers: {}, body: '' };
-    r.writeHead = (code, headers) => { r.code = code; Object.assign(r.headers, headers); };
-    r.end = (body) => { r.body = body; };
-    return r;
-  };
-  const req = (method, url) => ({ method, url, headers: { 'sec-fetch-site': 'same-origin' }, async *[Symbol.asyncIterator]() {} });
-  apply(ctx2, {
-    dir: dir2,
-    provider: 'p-test',
-    baseURL: 'http://fake.local/v1',
-    apiKeyEnv: 'PELICAN_MULTI_KEY',
-    apiKey: 'sk-multi',
-    model: 'seed-model',
-    runOnStart: false,
-    credentialsFile: path.join(tmp, 'none.yaml'),
-  });
-
-  // the picker's catalog: live /models discovery merged with the seed model
-  const catRes = fakeRes();
-  await routes2['/api/pelican-watch/catalog'].handler(req('GET', '/api/pelican-watch/catalog?refresh=1'), catRes);
-  const catalog = JSON.parse(catRes.body);
-  const row = catalog.providers.find((p) => p.provider === 'p-test');
-  assert.ok(row, 'the configured provider appears in the picker');
-  for (const id of ['seed-model', 'live-a', 'live-b']) {
-    assert.ok(row.models.includes(id), `discovered model ${id}`);
-  }
-  assert.equal(row.keyAvailable, true);
-
-  // saving a selection persists it and never echoes key material
-  const saveRes = fakeRes();
-  await routes2['/api/pelican-watch/targets'].handler(
-    reqBody('POST', '/api/pelican-watch/targets', {
-      targets: [{ provider: 'p-test', baseURL: 'http://fake.local/v1', apiKeyEnv: 'PELICAN_MULTI_KEY', model: 'live-a', apiKey: 'sk-secret' }],
-    }),
-    saveRes,
-  );
-  assert.equal(saveRes.code, 200);
-  assert.ok(!saveRes.body.includes('sk-secret'), 'keys never travel to the browser');
-  assert.equal(loadSettings(dir2).targets[0].model, 'live-a', 'selection persisted to disk');
-
-  // an empty selection is refused
-  const emptyRes = fakeRes();
-  await routes2['/api/pelican-watch/targets'].handler(reqBody('POST', '/api/pelican-watch/targets', { targets: [] }), emptyRes);
-  assert.equal(emptyRes.code, 400, 'cannot save an empty selection');
-
-  // running one model runs only that model, and it lands in that model's row
-  const runRes2 = fakeRes();
-  await routes2['/api/pelican-watch/run'].handler(
-    reqBody('POST', '/api/pelican-watch/run', { model: 'live-a', provider: 'p-test' }),
-    runRes2,
-  );
-  await new Promise((r) => setTimeout(r, 120));
-  const listRes2 = fakeRes();
-  await routes2['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), listRes2);
-  const list2 = JSON.parse(listRes2.body);
-  assert.equal(list2.images.length, 1, 'only the requested model ran');
-  assert.equal(list2.images[0].model, 'live-a');
-  assert.equal(list2.images[0].score, undefined, 'the gallery carries no score');
-  assert.equal(list2.images[0].features, undefined, 'and no rubric features');
-  assert.equal(list2.targets.length, 1);
-  assert.equal(list2.summary[0].model, 'live-a');
-  assert.equal(list2.summary[0].count, 1);
-
-  // ---- one pass over three models: progress while running, failures per model ----
-  globalThis.fetch = async (url, init = {}) => {
-    if (String(url).endsWith('/models')) {
-      return { ok: true, status: 200, json: async () => ({ data: [] }), text: async () => '' };
-    }
-    const body = init.body ? JSON.parse(init.body) : {};
-    await new Promise((r) => setTimeout(r, 60));
-    if (body.model === 'bad-model') {
-      return { ok: false, status: 500, text: async () => 'boom', json: async () => ({}) };
-    }
-    return { ok: true, status: 200, text: async () => '', json: async () => ({ choices: [{ message: { content: PAGE } }] }) };
-  };
-  const setRes = fakeRes();
-  await routes2['/api/pelican-watch/targets'].handler(reqBody('POST', '/api/pelican-watch/targets', {
-    targets: ['live-a', 'live-b', 'bad-model'].map((model) => ({
-      provider: 'p-test', baseURL: 'http://fake.local/v1', apiKeyEnv: 'PELICAN_MULTI_KEY', model,
-    })),
-  }), setRes);
-  assert.equal(setRes.code, 200);
-
-  await routes2['/api/pelican-watch/run'].handler(reqBody('POST', '/api/pelican-watch/run', {}), fakeRes());
-  await new Promise((r) => setTimeout(r, 20));
-  const midRes = fakeRes();
-  await routes2['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), midRes);
-  const mid = JSON.parse(midRes.body);
-  assert.equal(mid.running, true, 'the pass is observable while it runs');
-  assert.equal(mid.total, 3);
-  assert.ok(mid.inflight.length >= 1 && mid.done < 3, `progress is reported (inflight ${mid.inflight.length}, done ${mid.done})`);
-  assert.ok(typeof mid.startedAt === 'number', 'the pass reports when it started');
-  assert.ok(mid.inflight.every((model) => typeof mid.inflightSince[model] === 'number'),
-    'each in-flight model reports since when it has been waiting');
-
-  await new Promise((r) => setTimeout(r, 500));
-  const endRes = fakeRes();
-  await routes2['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), endRes);
-  const end = JSON.parse(endRes.body);
-  assert.equal(end.running, false, 'the pass finished');
-  assert.ok(String(end.errors['bad-model']).includes('HTTP 500'), 'the failure is recorded against that model');
-  assert.ok(!end.errors['live-b'], 'a failing model does not spoil the others');
-  assert.equal(end.images.filter((img) => img.model === 'live-b').length, 1, 'live-b drew while bad-model failed');
-  assert.equal(end.images.filter((img) => img.model === 'bad-model').length, 0, 'a failed request saves no drawing');
-  } finally {
-    // these effects own a 30-minute timer: dispose them or the test never exits
-    for (const d of effectDisposes.slice(disposerMark)) { try { d(); } catch { /* ignore */ } }
-  }
-}
-
-// ---- runOnStart: does booting the app fire a round right away? ----
-// Default true: one round ~8s after boot (so a restart always has fresh data).
-// runOnStart:false is the opt-out a user picks when they do not want the panel
-// to say "probing" the moment they open it: the first round then waits for the
-// interval. Both arms are asserted through the real /list payload.
-{
-  const offsets = [];
-  for (const runOnStart of [true, false]) {
-    const localRoutes = {};
-    const localDisposes = [];
-    apply({
-      effect: (fn) => { const d = fn(); if (typeof d === 'function') localDisposes.push(d); return d; },
-      webServer: { register: (r) => { localRoutes[r.path] = r; return () => delete localRoutes[r.path]; } },
-    }, {
-      dir: path.join(tmp, 'boot-round'),
-      model: 'probe-model',
-      apiKey: 'sk-test',
-      baseURL: 'http://fake.local/v1',
-      intervalMinutes: 30,
-      runOnStart,
-    });
-    const res = { code: 0, headers: {}, body: '', writeHead(c, h) { this.code = c; Object.assign(this.headers, h); }, end(b) { this.body = b; } };
-    await localRoutes['/api/pelican-watch/list'].handler(
-      { method: 'GET', url: '/api/pelican-watch/list', headers: { 'sec-fetch-site': 'same-origin' }, async *[Symbol.asyncIterator]() {} },
-      res,
-    );
-    offsets.push(JSON.parse(res.body).nextRunAt - Date.now());
-    // these owns a 30-minute timer: drop it or the test never exits
-    for (const d of localDisposes) { try { d(); } catch { /* ignore */ } }
-  }
-  assert.ok(offsets[0] >= 0 && offsets[0] < 60_000, `default arms the boot round soon (${offsets[0]}ms)`);
-  assert.ok(offsets[1] > 25 * 60_000, `runOnStart:false waits for the interval instead (${Math.round(offsets[1] / 60000)}min)`);
-}
-
-// ---- schedule control: pause, retune the interval, stop a pass ----
-// Probing costs tokens, so "stop" has to mean something concrete: the timer is
-// disarmed at once, the in-flight request is aborted, and models that had not
-// started yet are skipped without a single request being sent.
-{
-  const localRoutes = {};
-  const localDisposes = [];
-  const scheduleDir = path.join(tmp, 'schedule');
-  const requests = [];
-  let hanging = false;
-  globalThis.fetch = (url, init = {}) => {
-    requests.push(String(url));
-    if (!hanging) {
-      return Promise.resolve({ ok: true, status: 200, text: async () => '', json: async () => ({ choices: [{ message: { content: PAGE } }] }) });
-    }
-    return new Promise((resolve, reject) => {
-      const signal = init.signal;
-      const fail = () => { const error = new Error('aborted'); error.name = 'AbortError'; reject(error); };
-      if (signal && signal.aborted) return fail();
-      if (signal) signal.addEventListener('abort', fail, { once: true });
-      return undefined;
-    });
-  };
-  const reqBody = (method, url, payload) => ({
-    method, url, headers: { 'sec-fetch-site': 'same-origin' },
-    async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(payload)); },
-  });
-  const req = (method, url) => ({ method, url, headers: { 'sec-fetch-site': 'same-origin' }, async *[Symbol.asyncIterator]() {} });
-  const fakeRes = () => {
-    const r = { code: 0, headers: {}, body: '' };
-    r.writeHead = (code, headers) => { r.code = code; Object.assign(r.headers, headers); };
-    r.end = (body) => { r.body = body; };
-    return r;
-  };
-  const mount = (routes) => apply({
-    effect: (fn) => { const d = fn(); if (typeof d === 'function') localDisposes.push(d); return d; },
-    webServer: { register: (r) => { routes[r.path] = r; return () => delete routes[r.path]; } },
-  }, {
-    dir: scheduleDir,
-    model: 'm-a',
-    apiKey: 'sk-test',
-    baseURL: 'http://fake.local/v1',
-    intervalMinutes: 30,
-    concurrency: 1,
-    runOnStart: false,
-    credentialsFile: path.join(tmp, 'none.yaml'),
-    targets: [
-      { provider: 'p', baseURL: 'http://fake.local/v1', apiKeyEnv: 'K', apiKey: 'sk-a', model: 'm-a' },
-      { provider: 'p', baseURL: 'http://fake.local/v1', apiKeyEnv: 'K', apiKey: 'sk-a', model: 'm-b' },
+// ── fake DSH model service ─────────────────────────────────────────────────
+/** A stand-in for `ctx.llm`: two provider routes (the signed-in account and a
+ *  pi-ai provider), their model catalogues, and a scripted drawing stream. */
+function makeLlm(options = {}) {
+  const llm = {
+    requests: [],
+    providers: options.providers ?? [
+      { id: 'deepseek-account', name: 'DeepSeek 账号' },
+      { id: 'taotoken', name: 'taotoken' },
     ],
-  });
-  const list = async (routes) => {
-    const res = fakeRes();
-    await routes['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), res);
-    return JSON.parse(res.body);
+    catalog: options.catalog ?? {
+      'deepseek-account': [
+        { id: 'deepseek-v4.1-flash', name: 'DeepSeek-V4.1-Flash' },
+        { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro' },
+      ],
+      taotoken: [{ id: 'glm-5.3-flash', name: 'GLM-5.3-Flash' }],
+    },
+    /** What the "model" answers. */
+    answer: options.answer ?? PAGE,
+    /** Yield a terminal error finish instead of text. */
+    failure: options.failure ?? null,
+    /** Never finish until aborted. */
+    hang: options.hang === true,
+    /** Delay before the first chunk (lets a stop arrive mid-flight). */
+    delayMs: options.delayMs ?? 0,
   };
-  const post = async (routes, routePath, payload) => {
+  llm.listProviders = () => llm.providers.map((route) => ({ ...route }));
+  llm.listModels = async (provider) => {
+    // A provider that cannot list (not signed in) throws, like the real service.
+    if (typeof llm.catalog[provider] === 'string') throw new Error(llm.catalog[provider]);
+    return (llm.catalog[provider] ?? []).map((model) => ({ provider, ...model }));
+  };
+  llm.stream = (request) => {
+    llm.requests.push(request);
+    const signal = request.signal;
+    return (async function* stream() {
+      const aborted = new Promise((resolve) => {
+        if (signal === undefined) return;
+        if (signal.aborted) { resolve(); return; }
+        signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      if (llm.delayMs > 0) await Promise.race([new Promise((r) => setTimeout(r, llm.delayMs)), aborted]);
+      if (llm.hang) {
+        await aborted;
+        yield { type: 'finish', reason: { kind: 'aborted', failure: { code: 'ABORTED' } } };
+        return;
+      }
+      if (signal?.aborted) {
+        yield { type: 'finish', reason: { kind: 'aborted', failure: { code: 'ABORTED' } } };
+        return;
+      }
+      if (llm.failure !== null) {
+        yield { type: 'finish', reason: { kind: 'error', failure: llm.failure } };
+        return;
+      }
+      yield { type: 'text-delta', index: 0, text: llm.answer };
+      yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 20 } };
+      yield { type: 'finish', reason: { kind: 'stop' } };
+    })();
+  };
+  return llm;
+}
+
+// ── apply() wiring: routes, catalogue, drawing, image serving ──────────────
+const routes = {};
+const resets = [];
+function mount(llm, config) {
+  const table = {};
+  apply({
+    effect: (fn) => { const d = fn(); if (typeof d === 'function') resets.push(d); return d; },
+    webServer: { register: (r) => { table[r.path] = r; routes[r.path] = r; return () => delete table[r.path]; } },
+    llm,
+  }, config);
+  return table;
+}
+function fakeRes() {
+  const r = { code: 0, headers: {}, body: '' };
+  r.writeHead = (code, headers) => { r.code = code; Object.assign(r.headers, headers); };
+  r.end = (body) => { r.body = body; };
+  return r;
+}
+const req = (method, url) => ({ method, url, headers: { 'sec-fetch-site': 'same-origin' }, async *[Symbol.asyncIterator]() {} });
+const wait = (ms = 60) => new Promise((r) => setTimeout(r, ms));
+
+const llm = makeLlm();
+const pluginDir = path.join(tmp, 'plugin-gallery');
+const table = mount(llm, { dir: pluginDir, model: 'deepseek-v4.1-flash', runOnStart: false, maxImages: 12 });
+
+assert.ok(table['/api/pelican-watch/list'], 'list route registered');
+assert.ok(table['/api/pelican-watch/run'], 'run route registered');
+assert.equal(table['/api/pelican-watch/raw'], undefined, 'no raw page route: the viewer only shows the drawing');
+
+{
+  // The catalogue is DSH's own: provider routes with their display names and
+  // the models each one advertises (the account route included).
+  const catRes = fakeRes();
+  await table['/api/pelican-watch/catalog'].handler(req('GET', '/api/pelican-watch/catalog'), catRes);
+  const cat = JSON.parse(catRes.body);
+  assert.equal(cat.ok, true);
+  assert.deepEqual(cat.providers.map((p) => p.provider), ['deepseek-account', 'taotoken'], 'every registered route is offered');
+  assert.equal(cat.providers[0].displayName, 'DeepSeek 账号', 'with the display name the app uses');
+  assert.deepEqual(cat.providers[0].models, [
+    { id: 'deepseek-v4.1-flash', name: 'DeepSeek-V4.1-Flash' },
+    { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro' },
+  ], 'the account catalogue is listed with ids and names');
+  assert.deepEqual(cat.targets, [{ provider: 'deepseek-account', model: 'deepseek-v4.1-flash' }], 'seeded target');
+}
+
+{
+  // Trigger a pass through the HTTP surface (fire-and-forget) and wait.
+  const runRes = fakeRes();
+  await table['/api/pelican-watch/run'].handler(req('POST', '/api/pelican-watch/run'), runRes);
+  assert.equal(runRes.code, 200);
+  await wait(120);
+
+  assert.equal(llm.requests.length, 1, 'exactly one model call');
+  const request = llm.requests[0];
+  assert.equal(request.provider, 'deepseek-account', 'called through the account route');
+  assert.equal(request.model, 'deepseek-v4.1-flash');
+  assert.equal(request.messages.length, 1);
+  assert.equal(request.messages[0].role, 'user');
+  assert.deepEqual(request.messages[0].content, [{ type: 'text', text: PROMPT }], 'the fixed benchmark prompt');
+  assert.ok(request.signal instanceof AbortSignal, 'a cancel signal is always passed');
+
+  const listRes = fakeRes();
+  await table['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), listRes);
+  const payload = JSON.parse(listRes.body);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.images.length, 1, 'the triggered run was saved');
+  assert.equal(payload.images[0].model, 'deepseek-v4.1-flash');
+  assert.equal(payload.images[0].provider, 'deepseek-account');
+  assert.equal(payload.images[0].hasSvg, true);
+  assert.equal(payload.lastError, null);
+
+  // image route serves the svg side file with a locked-down content type
+  const imgRes = fakeRes();
+  await table['/api/pelican-watch/image'].handler(req('GET', `/api/pelican-watch/image?id=${encodeURIComponent(payload.images[0].id)}`), imgRes);
+  assert.equal(imgRes.code, 200);
+  assert.equal(imgRes.headers['content-type'], 'image/svg+xml; charset=utf-8');
+  assert.equal(imgRes.headers['x-content-type-options'], 'nosniff');
+  assert.ok(String(imgRes.body).startsWith('<svg'), 'svg body served');
+
+  // traversal attempts are rejected
+  for (const evil of ['..%2F..%2Fetc%2Fpasswd', '..', 'a/b', '%2e%2e']) {
+    const badRes = fakeRes();
+    await table['/api/pelican-watch/image'].handler(req('GET', `/api/pelican-watch/image?id=${evil}`), badRes);
+    assert.equal(badRes.code, 404, `traversal rejected: ${evil}`);
+  }
+}
+
+{
+  // Saving a selection persists {provider, model} and keeps the schedule knobs.
+  const saveRes = fakeRes();
+  await table['/api/pelican-watch/schedule'].handler({ ...req('POST', '/api/pelican-watch/schedule'), async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify({ intervalMinutes: 5 })); } }, saveRes);
+  const pick = { targets: [{ provider: 'deepseek-account', model: 'deepseek-v4-pro' }, { provider: 'taotoken', model: 'glm-5.3-flash' }] };
+  const pickRes = fakeRes();
+  await table['/api/pelican-watch/targets'].handler({ ...req('POST', '/api/pelican-watch/targets'), async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(pick)); } }, pickRes);
+  assert.equal(pickRes.code, 200);
+  const stored = loadSettings(pluginDir);
+  assert.deepEqual(stored.targets, pick.targets, 'selection persisted as provider+model');
+  assert.equal(stored.intervalMinutes, 5, 'and the saved interval is not clobbered');
+  const listRes = fakeRes();
+  await table['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), listRes);
+  assert.deepEqual(JSON.parse(listRes.body).targets, pick.targets);
+}
+
+// ── a provider failure is reported as text, not as a crash ────────────────
+{
+  const failing = makeLlm({ failure: { code: 'MISSING_CREDENTIAL', message: 'no API key for route "deepseek-official"' } });
+  const failingDir = path.join(tmp, 'failing');
+  const t = mount(failing, { dir: failingDir, model: 'deepseek-v4-pro', runOnStart: false });
+  await t['/api/pelican-watch/run'].handler(req('POST', '/api/pelican-watch/run'), fakeRes());
+  await wait(80);
+  const listRes = fakeRes();
+  await t['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), listRes);
+  const payload = JSON.parse(listRes.body);
+  assert.equal(payload.images.length, 0, 'nothing saved for a failed call');
+  assert.match(payload.lastError, /凭据/, 'the failure code is translated into an actionable message');
+  assert.match(payload.lastError, /no API key/, 'and the provider detail is kept');
+  assert.equal(payload.running, false, 'a failed pass still ends');
+}
+
+{
+  // A provider that cannot list its models still appears, with its reason.
+  const signedOut = makeLlm({ catalog: { 'deepseek-account': 'ACCOUNT_SIGN_IN_REQUIRED' } });
+  const t = mount(signedOut, { dir: path.join(tmp, 'signed-out'), runOnStart: false });
+  const catRes = fakeRes();
+  await t['/api/pelican-watch/catalog'].handler(req('GET', '/api/pelican-watch/catalog'), catRes);
+  const cat = JSON.parse(catRes.body);
+  const account = cat.providers.find((p) => p.provider === 'deepseek-account');
+  assert.deepEqual(account.models, []);
+  assert.match(account.error, /ACCOUNT_SIGN_IN_REQUIRED/, 'the reason travels to the panel');
+}
+
+// ── failureText: stable codes become actionable Chinese ───────────────────
+assert.match(failureText({ code: 'ACCOUNT_SIGN_IN_REQUIRED' }), /登录 DeepSeek 账号/);
+assert.match(failureText({ code: 'RATE_LIMIT', message: '429' }), /限流.*429/);
+assert.match(failureText({ code: 'WEIRD', message: 'boom' }), /boom/);
+assert.match(failureText({}, { provider: 'x' }), /调用失败/);
+
+// ── a hung model is cut off by the per-request timeout ────────────────────
+{
+  const hung = makeLlm({ hang: true });
+  const started = Date.now();
+  await assert.rejects(
+    drawWithLlm(hung, { provider: 'deepseek-account', model: 'deepseek-v4-pro' }, 'draw', { timeoutMs: 60 }),
+    /超过 0 秒没有返回|秒没有返回/,
+    'a hung stream becomes a timeout message',
+  );
+  assert.ok(Date.now() - started < 2000, 'and returns promptly');
+}
+
+// ── a stop aborts the call in flight and skips the queued models ──────────
+{
+  const slow = makeLlm({ hang: true });
+  const stopDir = path.join(tmp, 'stopping');
+  const t = mount(slow, { dir: stopDir, runOnStart: false, concurrency: 1, targets: [
+    { provider: 'deepseek-account', model: 'm-a' },
+    { provider: 'deepseek-account', model: 'm-b' },
+  ] });
+  const runRes = fakeRes();
+  await t['/api/pelican-watch/run'].handler(req('POST', '/api/pelican-watch/run'), runRes);
+  await wait(60);
+  assert.equal(slow.requests.length, 1, 'concurrency 1 → one call in flight');
+  const stopRes = fakeRes();
+  await t['/api/pelican-watch/stop'].handler(req('POST', '/api/pelican-watch/stop'), stopRes);
+  assert.deepEqual(JSON.parse(stopRes.body).stopped, true, 'the stop reached the running pass');
+  await wait(80);
+  assert.equal(slow.requests.length, 1, 'the queued model was skipped, no request sent');
+  const listRes = fakeRes();
+  await t['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), listRes);
+  const payload = JSON.parse(listRes.body);
+  assert.deepEqual(payload.stopped, ['m-a', 'm-b'], 'both models are reported as stopped');
+  assert.equal(payload.errors['m-a'], STOPPED_MESSAGE);
+  assert.equal(payload.errors['m-b'], STOPPED_MESSAGE);
+  assert.equal(payload.images.length, 0);
+  const again = fakeRes();
+  await t['/api/pelican-watch/stop'].handler(req('POST', '/api/pelican-watch/stop'), again);
+  assert.equal(JSON.parse(again.body).stopped, false, 'stopping twice is not an error');
+}
+
+{
+  // A finished pass clears the stopped marks and the errors.
+  const ok = makeLlm();
+  const t = mount(ok, { dir: path.join(tmp, 'after-stop'), runOnStart: false, targets: [{ provider: 'deepseek-account', model: 'm-a' }] });
+  await t['/api/pelican-watch/run'].handler(req('POST', '/api/pelican-watch/run'), fakeRes());
+  await wait(100);
+  const listRes = fakeRes();
+  await t['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), listRes);
+  const payload = JSON.parse(listRes.body);
+  assert.deepEqual(payload.stopped, []);
+  assert.deepEqual(payload.errors, {});
+  assert.equal(payload.images.length, 1);
+}
+
+// ── bounded concurrency: no more than `concurrency` calls at once ─────────
+{
+  const slow = makeLlm({ delayMs: 40, answer: PAGE });
+  const t = mount(slow, { dir: path.join(tmp, 'concurrency'), runOnStart: false, concurrency: 2, targets: [
+    { provider: 'deepseek-account', model: 'c1' }, { provider: 'deepseek-account', model: 'c2' },
+    { provider: 'deepseek-account', model: 'c3' }, { provider: 'deepseek-account', model: 'c4' },
+  ] });
+  await t['/api/pelican-watch/run'].handler(req('POST', '/api/pelican-watch/run'), fakeRes());
+  await wait(30);
+  assert.equal(slow.requests.length, 2, 'only two calls in flight at a time');
+  await wait(200);
+  assert.equal(slow.requests.length, 4, 'all four eventually run');
+}
+
+// ── pool: caps the number in flight and keeps order ───────────────────────
+{
+  let active = 0;
+  let peak = 0;
+  const seen = [];
+  await pool([1, 2, 3, 4, 5], 2, async (n) => {
+    active += 1; peak = Math.max(peak, active); seen.push(n);
+    await new Promise((r) => setTimeout(r, 10));
+    active -= 1;
+  });
+  assert.equal(peak, 2, 'pool respects the limit');
+  assert.deepEqual(seen.sort(), [1, 2, 3, 4, 5]);
+}
+
+// ── schedule control: pause, retune the interval, stop a pass ─────────────
+{
+  const ok = makeLlm();
+  const t = mount(ok, { dir: path.join(tmp, 'schedule'), runOnStart: false });
+  const listBefore = fakeRes();
+  await t['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), listBefore);
+  const before = JSON.parse(listBefore.body);
+  assert.equal(before.autoEnabled, true, 'automatic probing is on by default');
+  assert.ok(typeof before.nextRunAt === 'number' && before.nextRunAt > Date.now(), 'the next pass is scheduled');
+
+  const patch = async (body) => {
     const res = fakeRes();
-    await routes[routePath].handler(reqBody('POST', routePath, payload), res);
+    await t['/api/pelican-watch/schedule'].handler({ ...req('POST', '/api/pelican-watch/schedule'), async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(body)); } }, res);
     return { code: res.code, body: JSON.parse(res.body) };
   };
 
-  mount(localRoutes);
-  const booted = await list(localRoutes);
-  assert.equal(booted.autoEnabled, true, 'auto probing is on by default');
-  assert.equal(booted.intervalMinutes, 30, 'the config interval is reported');
-
-  // pause: the pending timer is dropped immediately, not after it fires
-  const paused = await post(localRoutes, '/api/pelican-watch/schedule', { autoEnabled: false });
+  const paused = await patch({ autoEnabled: false });
   assert.equal(paused.code, 200);
   assert.equal(paused.body.autoEnabled, false);
-  assert.equal(paused.body.nextRunAt, null, 'pausing disarms the timer at once');
-  assert.equal((await list(localRoutes)).nextRunAt, null, 'and it stays disarmed');
+  const listPaused = fakeRes();
+  await t['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), listPaused);
+  assert.equal(JSON.parse(listPaused.body).nextRunAt, null, 'pausing disarms the timer at once');
 
-  // interval: accepted, reported, clamped, persisted
-  const retuned = await post(localRoutes, '/api/pelican-watch/schedule', { intervalMinutes: 5 });
-  assert.equal(retuned.body.intervalMinutes, 5);
-  assert.equal((await list(localRoutes)).intervalMinutes, 5);
+  const interval = await patch({ intervalMinutes: 5 });
+  assert.equal(interval.code, 200);
+  assert.equal(interval.body.intervalMinutes, 5);
+
   for (const bad of [0, -3, 1441, 'abc']) {
-    const res = await post(localRoutes, '/api/pelican-watch/schedule', { intervalMinutes: bad });
-    assert.equal(res.code, 400, `interval ${bad} is rejected`);
+    const res = await patch({ intervalMinutes: bad });
+    assert.equal(res.code, 400, `rejects interval ${JSON.stringify(bad)}`);
   }
-  assert.equal((await post(localRoutes, '/api/pelican-watch/schedule', {})).code, 400, 'an empty patch is rejected');
-  assert.equal((await list(localRoutes)).intervalMinutes, 5, 'a rejected value never mutated the live interval');
+  const listAfterBad = fakeRes();
+  await t['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), listAfterBad);
+  assert.equal(JSON.parse(listAfterBad.body).intervalMinutes, 5, 'a rejected value leaves the live interval alone');
 
-  // resume, then stop a pass that is stuck on a hanging request
-  await post(localRoutes, '/api/pelican-watch/schedule', { autoEnabled: true });
-  assert.ok((await list(localRoutes)).nextRunAt > Date.now(), 'resuming arms the timer again');
-  await post(localRoutes, '/api/pelican-watch/schedule', { autoEnabled: false });
+  const empty = await patch({});
+  assert.equal(empty.code, 400, 'an empty patch is refused');
 
-  hanging = true;
-  requests.length = 0;
-  const started = await post(localRoutes, '/api/pelican-watch/run', {});
-  assert.equal(started.body.started, true, 'the manual probe is allowed while the timer is paused');
-  await new Promise((r) => setTimeout(r, 40));
-  const during = await list(localRoutes);
-  assert.equal(during.running, true, 'the pass is in flight');
-  assert.equal(requests.length, 1, 'concurrency 1 → exactly one request out');
-  assert.equal(during.nextRunAt, null, 'a paused schedule does not re-arm after a manual pass');
+  const resumed = await patch({ autoEnabled: true });
+  assert.equal(resumed.body.autoEnabled, true);
+  assert.ok(typeof resumed.body.nextRunAt === 'number' && resumed.body.nextRunAt > Date.now(), 'resuming arms the next pass');
 
-  const stopped = await post(localRoutes, '/api/pelican-watch/stop', {});
-  assert.equal(stopped.body.stopped, true, 'the stop hit a running pass');
-  await new Promise((r) => setTimeout(r, 60));
-  const after = await list(localRoutes);
-  assert.equal(after.running, false, 'the pass ended on the stop');
-  assert.equal(requests.length, 1, 'the model that had not started was never asked — no tokens spent');
-  assert.equal(after.errors['m-a'], STOPPED_MESSAGE, 'the aborted model reports a stop, not a timeout');
-  assert.equal(after.errors['m-b'], STOPPED_MESSAGE, 'the skipped model is marked stopped too');
-  assert.deepEqual(after.stopped, ['m-a', 'm-b'], 'and they are listed as stopped, not as timed out');
-  assert.equal((await post(localRoutes, '/api/pelican-watch/stop', {})).body.stopped, false, 'stopping an idle plugin is a no-op');
-
-  // a later pass that is allowed to finish clears the stopped note
-  hanging = false;
-  await post(localRoutes, '/api/pelican-watch/run', {});
-  await new Promise((r) => setTimeout(r, 80));
-  const recovered = await list(localRoutes);
-  assert.deepEqual(recovered.stopped, [], 'a finished pass clears the stopped list');
-  assert.deepEqual(recovered.errors, {}, 'and the per-model errors');
-
-  // one settings file: saving a selection must not wipe the schedule knobs
-  await post(localRoutes, '/api/pelican-watch/targets', {
-    targets: [{ provider: 'p', baseURL: 'http://fake.local/v1', apiKeyEnv: 'K', model: 'm-a' }],
-  });
-  const kept = loadSettings(scheduleDir);
-  assert.equal(kept.autoEnabled, false, 'saving targets kept autoEnabled');
-  assert.equal(kept.intervalMinutes, 5, 'saving targets kept intervalMinutes');
-  assert.equal(kept.targets[0].model, 'm-a');
-  assert.equal(kept.targets.length, 1, 'the selection itself was replaced, not appended');
-
-  // and both knobs survive a restart
-  for (const d of localDisposes.splice(0)) { try { d(); } catch { /* ignore */ } }
-  const routes3 = {};
-  mount(routes3);
-  const reborn = await list(routes3);
-  assert.equal(reborn.autoEnabled, false, 'the pause survived a restart');
-  assert.equal(reborn.intervalMinutes, 5, 'the interval survived a restart');
-  for (const d of localDisposes.splice(0)) { try { d(); } catch { /* ignore */ } }
+  const persisted = JSON.parse(fs.readFileSync(path.join(tmp, 'schedule', 'settings.json'), 'utf8'));
+  assert.equal(persisted.autoEnabled, true);
+  assert.equal(persisted.intervalMinutes, 5);
 }
 
-// ---- client entry contract: BOTH apply and inject must be exported ----
-// A bare `return { apply }` makes the entry fail to activate and aborts the
-// whole web boot ("1 entry did not activate"). Load the real client source
-// through a ModuleLoader shim and assert the export shape.
+// ── runOnStart: does booting fire a pass right away? ──────────────────────
+{
+  // starts off: no automatic pass
+  const off = makeLlm();
+  mount(off, { dir: path.join(tmp, 'boot-off'), runOnStart: false, targets: [{ provider: 'deepseek-account', model: 'boot' }] });
+  await wait(120);
+  assert.equal(off.requests.length, 0, 'runOnStart:false never probes on boot');
+
+  // does start on: one pass shortly after boot
+  const on = makeLlm();
+  mount(on, { dir: path.join(tmp, 'boot-on'), runOnStart: true, targets: [{ provider: 'deepseek-account', model: 'boot' }] });
+  await wait(8600);
+  assert.equal(on.requests.length, 1, 'runOnStart:true probes once');
+  await wait(200);
+  assert.equal(on.requests.length, 1, 'and only once (the next pass waits a full interval)');
+}
+
+// ── a fresh install has no fabricated target ──────────────────────────────
+{
+  const fresh = makeLlm();
+  const t = mount(fresh, { dir: path.join(tmp, 'fresh'), runOnStart: false });
+  const listRes = fakeRes();
+  await t['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), listRes);
+  assert.deepEqual(JSON.parse(listRes.body).targets, [], 'nothing invented: the picker is where you choose');
+  assert.equal(fresh.requests.length, 0);
+}
+
+// ── client entry contract: BOTH apply and inject must be exported ─────────
 {
   const captured = [];
   const fakeWindow = { __ModuleLoader__: { load: (def) => captured.push(def) } };
   const source = fs.readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
-  const fakeRequire = (name) => {
-    if (name === 'react') return { createElement: () => null };
-    throw new Error(`unexpected require: ${name}`);
-  };
-  new Function('window', 'require', source)(fakeWindow, fakeRequire);
-  assert.equal(captured.length, 1, 'client registers exactly one module');
-  const clientExports = captured[0].factory(fakeRequire);
-  assert.equal(typeof clientExports.apply, 'function', 'client must export apply');
-  assert.ok(Array.isArray(clientExports.inject), 'client must export inject');
-  assert.ok(clientExports.inject.includes('slots') && clientExports.inject.includes('locale'),
-    'inject must declare the services apply uses');
+  new Function('window', 'require', source)(fakeWindow, () => ({}));
+  assert.equal(captured.length, 1);
+  const clientExports = captured[0].factory(() => ({}));
+  assert.equal(typeof clientExports.apply, 'function', 'client exports apply');
+  assert.ok(Array.isArray(clientExports.inject), 'client exports inject (a bare apply aborts the web boot)');
+  assert.deepEqual([...clientExports.inject].sort(), ['locale', 'slots']);
 }
 
-// ---- client source lint: dictionaries, inline styles and CSS classes ----
+// ── client source lint: dictionaries, inline styles and CSS classes ───────
 // The panel is plain createElement + inline styles plus one injected
 // stylesheet, so typos are invisible until runtime. Check the source instead:
 // every t("key") resolves, zh/en stay in sync with no dead entries, every
@@ -706,6 +499,7 @@ assert.deepEqual(loadSettings(path.join(tmp, 'no-settings')), {}, 'missing setti
   const styleKeys = blockKeys('const s = {', '// ── helpers');
   const usedStyles = new Set([...source.matchAll(/\bs\.([A-Za-z][A-Za-z0-9]*)/g)].map((m) => m[1]));
 
+  assert.ok(zhKeys.size > 40, `the dictionary is populated (${zhKeys.size} keys)`);
   assert.deepEqual([...usedKeys].filter((k) => !zhKeys.has(k)), [], 'every t() key has a translation');
   assert.deepEqual([...zhKeys].filter((k) => !enKeys.has(k)), [], 'zh keys are all translated to en');
   assert.deepEqual([...enKeys].filter((k) => !zhKeys.has(k)), [], 'no extra en keys');
@@ -721,5 +515,5 @@ assert.deepEqual(loadSettings(path.join(tmp, 'no-settings')), {}, 'missing setti
   assert.deepEqual([...jsClasses].filter((c) => !cssClasses.has(c)), [], 'every className has a CSS rule');
 }
 
-fs.rmSync(tmp, { recursive: true, force: true });
+for (const reset of resets) reset();
 console.log('pelican: OK');

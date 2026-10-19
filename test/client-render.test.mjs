@@ -112,9 +112,9 @@ const IMAGES = [
   { id: '20261016-153917_deepseek-v4-flash-vision-exp', time: '2026-10-16T07:39:17.540Z', model: 'deepseek-v4-flash-vision-exp', provider: 'taotoken', ms: 132043, ok: true, bytes: 6170, hasSvg: true },
 ];
 const TARGETS = [
-  { provider: 'taotoken', baseURL: 'https://taotoken.net/api/v1', apiKeyEnv: 'TAOTOKEN_API_KEY', model: 'deepseek-flash' },
-  { provider: 'taotoken', baseURL: 'https://taotoken.net/api/v1', apiKeyEnv: 'TAOTOKEN_API_KEY', model: 'deepseek-v4-flash' },
-  { provider: 'taotoken', baseURL: 'https://taotoken.net/api/v1', apiKeyEnv: 'TAOTOKEN_API_KEY', model: 'deepseek-v4-flash-vision-exp' },
+  { provider: 'taotoken', model: 'deepseek-flash' },
+  { provider: 'taotoken', model: 'deepseek-v4-flash' },
+  { provider: 'taotoken', model: 'deepseek-v4-flash-vision-exp' },
 ];
 const SUMMARY = [
   { model: 'deepseek-v4-flash-vision-exp', provider: 'taotoken', count: 2, avgMs: 100039, lastMs: 132043, refusals: 0, lastTime: IMAGES[1].time },
@@ -123,7 +123,6 @@ const SUMMARY = [
 ];
 const basePayload = {
   ok: true, images: IMAGES, targets: TARGETS, summary: SUMMARY,
-  providers: [{ provider: 'taotoken', keyAvailable: true }],
   maxImages: 12, intervalMinutes: 30, model: '', running: false, runningModel: null,
   inflight: [], inflightSince: {}, startedAt: null, done: 0, total: 0,
   errors: { 'deepseek-v4-flash': '超过 300 秒没有返回（可在插件配置里调大 timeoutSeconds）' },
@@ -132,10 +131,23 @@ const basePayload = {
 };
 const CATALOG = {
   ok: true,
-  providers: [{
-    provider: 'taotoken', baseURL: 'https://taotoken.net/api/v1', apiKeyEnv: 'TAOTOKEN_API_KEY',
-    keyAvailable: true, models: ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'],
-  }],
+  providers: [
+    {
+      provider: 'deepseek-account', displayName: 'DeepSeek 账号',
+      models: [
+        { id: 'deepseek-v4.1-flash', name: 'DeepSeek-V4.1-Flash' },
+        { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro' },
+      ],
+    },
+    {
+      provider: 'taotoken', displayName: 'taotoken',
+      models: [
+        { id: 'deepseek-flash', name: 'deepseek-flash' },
+        { id: 'deepseek-v4-flash', name: 'deepseek-v4-flash' },
+        { id: 'deepseek-v4-flash-vision-exp', name: 'deepseek-v4-flash-vision-exp' },
+      ],
+    },
+  ],
 };
 
 let payload = basePayload;
@@ -252,7 +264,8 @@ async function press(label, props = {}) {
   assert.ok(out.includes('间隔') && out.includes('value="30"'), 'the interval input shows the host value');
   assert.ok(/<button[^>]*disabled[^>]*>停止本轮/.test(out), '“stop this pass” is disabled while nothing runs');
   assert.ok(out.includes('自动检测开着') || out.includes('下次'), 'the schedule state is reported');
-  assert.ok(out.includes('deepseek-v4-flash-vision-exp') && out.includes('taotoken'), 'the catalog is listed');
+  assert.ok(out.includes('DeepSeek 账号') && out.includes('DeepSeek-V4.1-Flash'), 'the signed-in account route and its model names are listed');
+  assert.ok(out.includes('deepseek-v4-flash-vision-exp'), 'and so is the pi-ai provider');
   assert.ok(out.includes('type="checkbox"') && out.includes('保存模型'), 'models can be ticked and saved');
   assert.ok(out.includes('关闭') && out.includes('保存模型'), 'the modal can be closed and the model list saved');
 }
