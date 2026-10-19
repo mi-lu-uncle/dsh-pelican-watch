@@ -11,8 +11,9 @@ models**:
   in your DSH profile) and probes a multi-selected set, each model through its
   own provider and API key.
 - **Scheduled drawing** — every 30 minutes (configurable) each selected model is
-  asked to draw a *pelican riding a bicycle* as a single-file HTML page with an
-  inline SVG.
+  asked to draw an **animated** *pelican riding a bicycle*: a single-file HTML
+  page with an inline SVG whose motion is SVG declarative animation (`<animate>`
+  / `<animateTransform>`).
 - **No skills, no tools** — each run is a bare `chat/completions` request with
   no tool definitions and no agent loop, so the result measures the model
   alone, never your local skills.
@@ -122,6 +123,12 @@ Defaults match the usual profile setup; override any of them on a
 
 The benchmark prompt is deliberately fixed — changing it makes the history
 incomparable, so treat `prompt` as a last resort.
+
+The animation has to be SMIL, and that is not a preference: the panel shows the
+extracted SVG through an `<img>`, and a browser running an SVG *as an image*
+**does not play CSS animations and never runs scripts** — only declarative SMIL
+moves. An animated picture driven by `@keyframes` or `<script>` will look frozen
+here.
 
 ## API key
 

@@ -1,7 +1,7 @@
 {
   "name": "@mi-lu-uncle/dsh-pelican-watch",
-  "version": "0.7.1",
-  "description": "DSH community plugin: probe any set of models — each asked to draw an SVG 'pelican riding a bicycle' on a fixed interval — and lay every drawing out on a read-only board. No scoring: the pictures are the result. Its settings (model list, pause/resume, interval, stop) live in the panel behind one gear button, not in DSH Settings.",
+  "version": "0.8.0",
+  "description": "DSH community plugin: probe any set of models — each asked to draw an *animated* SVG 'pelican riding a bicycle' on a fixed interval — and lay every drawing out on a read-only board. No scoring: the pictures are the result. Its settings (model list, pause/resume, interval, stop) live in the panel behind one gear button, not in DSH Settings.",
   "author": "milu",
   "repository": "https://github.com/mi-lu-uncle/dsh-pelican-watch",
   "keywords": [

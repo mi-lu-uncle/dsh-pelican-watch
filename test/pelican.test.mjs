@@ -36,6 +36,17 @@ assert.equal(stripFences('<html></html>'), '<html></html>');
 assert.deepEqual(extractSvg(PAGE), SVG);
 assert.equal(extractSvg('no drawing here'), null);
 assert.equal(extractSvg('<svg>a</svg> tail <b>x</b>'), '<svg>a</svg>');
+// The task now asks for animation, so the extracted copy must keep the pieces
+// an <img> can actually play — SMIL, not CSS (browsers do not run CSS
+// animations inside an SVG loaded as an image).
+const ANIMATED = '<!doctype html><html><body><p>note</p><svg viewBox="0 0 10 10">'
+  + '<style>.x{fill:red}</style>'
+  + '<animateTransform attributeName="transform" type="rotate" from="0 5 5" to="360 5 5" dur="2s" repeatCount="indefinite"/>'
+  + '<circle cx="5" cy="5" r="3"/></svg></body></html>';
+const animatedSvg = extractSvg(ANIMATED);
+assert.ok(animatedSvg.startsWith('<svg') && animatedSvg.endsWith('</svg>'), 'animated drawing extracted whole');
+assert.ok(animatedSvg.includes('<animateTransform'), 'SMIL animation survives extraction');
+assert.ok(!animatedSvg.includes('<p>note</p>'), 'and the prose around it does not');
 assert.equal(modelSafe('glm-5.3-flash'), 'glm-5.3-flash');
 assert.equal(modelSafe('a/b\\c:d'), 'a-b-c-d');
 
@@ -238,9 +249,14 @@ try {
   for (const d of effectDisposes) { try { d(); } catch { /* ignore */ } }
 }
 
-// the prompt is the fixed benchmark text and never mentions tools/skills
-assert.ok(PROMPT.includes('鹈鹕') && PROMPT.includes('自行车'));
-assert.ok(!/skill|工具|agent/i.test(PROMPT), 'prompt stays a pure drawing task');
+// the prompt is the fixed benchmark text: one animated SVG, nothing else
+assert.ok(PROMPT.includes('鹈鹕') && PROMPT.toLowerCase().includes('svg'));
+assert.ok(PROMPT.includes('动图'), 'the task asks for an animated drawing');
+assert.ok(PROMPT.includes('不要调用任何 skill'), 'and tells the model not to reach for skills/tools');
+assert.ok(/<svg>/.test(PROMPT) && PROMPT.includes('<animate'), 'with the animation inside the <svg>, where an <img> can play it');
+assert.ok(/不要用 <script>/.test(PROMPT), 'script-driven animation is ruled out (an <img> would never run it)');
+assert.ok(/不要用 <style>/.test(PROMPT), 'CSS animation is ruled out too (an <img> would freeze it)');
+assert.ok(!/markdown 代码块[^\n]*\n[^\n]*要求/.test(PROMPT), 'prompt stays a single pass of instructions');
 
 // ---- bounded concurrency ----
 {
