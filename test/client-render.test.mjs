@@ -217,6 +217,7 @@ async function press(label, props = {}) {
   assert.ok(!/\d+\s*分(?!钟)/.test(out) && !out.includes('/100'), 'no score is shown anywhere');
   assert.ok(out.includes('没出图 3 次'), 'the model that never returns reports its refusal count');
   assert.ok(out.includes('超过 300 秒没有返回'), 'the timeout reason is printed on the page');
+  assert.ok(out.includes('>超时<'), 'and a timeout is labelled as one');
   assert.ok(out.includes('145.0s') && out.includes('132.0s'), 'per-drawing duration is printed');
   // The whole click budget of the panel: two header actions + one button per
   // drawing (which merely opens the bigger sandboxed view — optional).
@@ -300,6 +301,39 @@ async function press(label, props = {}) {
   assert.ok(out.includes('1 次检测'), 'each band reports its own count');
 }
 
+// ── 1d. a band that has never run says so, not "0 attempts" ────────────────
+{
+  payload = { ...basePayload, images: [], errors: {}, summary: [],
+    targets: [{ provider: 'deepseek-official', model: 'deepseek-flash' }] };
+  const out = await mount();
+  assert.ok(out.includes('还没有跑过'), 'a fresh target explains it never ran');
+  assert.ok(!out.includes('0 次尝试'), 'instead of claiming zero attempts');
+}
+
+// ── 1e. odd payloads must render, not crash ────────────────────────────────
+// These are states the host can really produce: a legacy drawing with no
+// provider, a provider that is no longer registered, a summary row whose model
+// is not selected, and a payload without the provider-name map at all.
+{
+  const legacy = { id: 'old-1', time: '2026-10-15T02:00:00.000Z', model: 'ancient-model', ms: null, ok: true, bytes: 10, hasSvg: true };
+  const cases = [
+    ['legacy drawing without a provider', { ...basePayload, providerNames: undefined, images: [legacy], summary: [
+      { model: 'ancient-model', provider: '', count: 1, avgMs: null, lastMs: null, refusals: 0, lastTime: legacy.time },
+    ], targets: [] }],
+    ['provider no longer registered', { ...basePayload, providerNames: {}, targets: [{ provider: 'gone-route', model: 'ghost' }], images: [], summary: [] }],
+    ['summary row not in targets', { ...basePayload, targets: [], images: IMAGES, summary: SUMMARY }],
+    ['payload without providerNames', { ...basePayload, providerNames: undefined }],
+    ['nulls everywhere', { ...basePayload, images: [{ ...IMAGES[0], ms: null, provider: '', bytes: null }], providerNames: undefined, summary: [], targets: [] }],
+  ];
+  for (const [label, fixture] of cases) {
+    payload = fixture;
+    const out = await mount();
+    assert.ok(!/undefined|NaN/.test(out), `${label}: no undefined/NaN leaked`);
+    assert.ok(out.length > 100, `${label}: something rendered`);
+    assert.ok(!/<button[^>]*>[^<]*undefined/.test(out), `${label}: no undefined label`);
+  }
+}
+
 // ── 2. the gear opens the settings modal, which holds every action ──────────
 // Probing costs tokens and the model list changes often, so this must be one
 // click away from the board — but inside the panel, not in DSH Settings.
@@ -317,6 +351,8 @@ async function press(label, props = {}) {
   assert.ok(out.includes('DeepSeek 账号') && out.includes('DeepSeek-V4.1-Flash'), 'the signed-in account route and its model names are listed');
   assert.ok(out.includes('deepseek-v4-flash-vision-exp'), 'and so is the pi-ai provider');
   assert.ok(out.includes('type="checkbox"') && out.includes('保存模型'), 'models can be ticked and saved');
+  assert.ok(out.includes('已选 3 / 3'), 'the pi-ai provider shows 3 ticked of 3 listed');
+  assert.ok(out.includes('已选 0 / 2'), 'an untouched provider shows 0 of 2');
   assert.ok(out.includes('关闭') && out.includes('保存模型'), 'the modal can be closed and the model list saved');
 }
 
@@ -349,6 +385,22 @@ async function press(label, props = {}) {
   ] };
   const out2 = await mount();
   assert.ok(out2.includes('还没有画'), 'targets but no drawings → explains the scheduler');
+}
+
+// ── 4b. only a real timeout says "timeout" ─────────────────────────────────
+{
+  payload = {
+    ...basePayload,
+    images: [],
+    summary: [{ model: 'deepseek-flash', provider: 'taotoken', count: 0, avgMs: null, lastMs: null, refusals: 0, lastTime: null }],
+    targets: [{ provider: 'taotoken', model: 'deepseek-flash' }],
+    errors: { 'taotoken|deepseek-flash': '这个提供方还没有配置凭据（在 DSH 设置 → 模型里填好 API Key）' },
+  };
+  const out = await mount();
+  assert.ok(out.includes('>失败<'), 'a credential failure reads “失败”, not “超时”');
+  assert.ok(!out.includes('>超时<'), 'and never claims a timeout');
+  assert.ok(out.includes('还没有配置凭据'), 'while the real reason is on the page');
+  assert.ok(!out.includes('还没有跑过'), 'a band that failed does not also claim it never ran');
 }
 
 // ── 5. a model that ran but never produced a drawing is not "ok" ───────────

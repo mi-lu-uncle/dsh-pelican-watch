@@ -48,6 +48,15 @@ const animatedSvg = extractSvg(ANIMATED);
 assert.ok(animatedSvg.startsWith('<svg') && animatedSvg.endsWith('</svg>'), 'animated drawing extracted whole');
 assert.ok(animatedSvg.includes('<animateTransform'), 'SMIL animation survives extraction');
 assert.ok(!animatedSvg.includes('<p>note</p>'), 'and the prose around it does not');
+// A model can emit two SVGs (an icon before the real drawing). "First <svg> to
+// last </svg>" would store both plus the prose between them, which no <img> can
+// parse — the extracted drawing must be the first complete element.
+assert.equal(
+  extractSvg('<svg id="a"><circle r="1"/></svg><p>prose</p><svg id="b"><circle r="2"/></svg>'),
+  '<svg id="a"><circle r="1"/></svg>',
+  'only the first drawing is extracted',
+);
+assert.equal(extractSvg('<svg><circle r="1"/>'), null, 'an unclosed svg is not a drawing');
 assert.equal(modelSafe('glm-5.3-flash'), 'glm-5.3-flash');
 assert.equal(modelSafe('a/b\\c:d'), 'a-b-c-d');
 
@@ -77,6 +86,21 @@ assert.equal(listed[0].model, 'refuser', 'newest first');
 assert.equal(listed[0].hasSvg, false);
 assert.equal(listed[1].hasSvg, true);
 assert.equal(listed[0].score, undefined, 'the gallery carries no score');
+fs.rmSync(path.join(dir, `${first.id}.svg`), { force: true });
+assert.equal(listGallery(dir, 10).find((row) => row.id === first.id).ok, false,
+  'a drawing whose side file is missing reads as no-drawing');
+
+// ---- listGallery: the cap is per provider+model too ----
+const listDir = path.join(tmp, 'list-cap');
+for (let i = 0; i < 3; i += 1) saveRun(listDir, 'm1', PAGE, i, 'p1', { now: Date.now() + i * 1000 });
+for (let i = 0; i < 3; i += 1) saveRun(listDir, 'm2', PAGE, i, 'p2', { now: Date.now() + i * 1000 + 400 });
+assert.equal(listGallery(listDir, 2).length, 4, 'two per model, four rows in total');
+assert.deepEqual(
+  listGallery(listDir, 2).map((r) => r.model).sort(),
+  ['m1', 'm1', 'm2', 'm2'],
+  'neither model is starved by the other',
+);
+assert.equal(listGallery(listDir, 99).length, 6, 'a generous cap returns everything');
 
 // ---- prune keeps the newest `max` per model (not for the whole folder) ----
 const small = path.join(tmp, 'pruned');
@@ -273,6 +297,7 @@ assert.equal(table['/api/pelican-watch/raw'], undefined, 'no raw page route: the
   assert.equal(imgRes.code, 200);
   assert.equal(imgRes.headers['content-type'], 'image/svg+xml; charset=utf-8');
   assert.equal(imgRes.headers['x-content-type-options'], 'nosniff');
+  assert.match(imgRes.headers['cache-control'], /immutable/, 'a drawing id never changes, so it may be cached');
   assert.ok(String(imgRes.body).startsWith('<svg'), 'svg body served');
 
   // traversal attempts are rejected
@@ -400,6 +425,12 @@ assert.match(failureText({}, { provider: 'x' }), /调用失败/);
   await t['/api/pelican-watch/run'].handler(req('POST', '/api/pelican-watch/run'), fakeRes());
   await wait(30);
   assert.equal(slow.requests.length, 2, 'only two calls in flight at a time');
+  const duringRes = fakeRes();
+  await t['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), duringRes);
+  const during = JSON.parse(duringRes.body);
+  assert.equal(during.inflight.length, 2, 'only started models are "probing"');
+  assert.equal(during.total, 4, 'while the pass still knows its size');
+  assert.deepEqual(Object.keys(during.inflightSince).sort(), [...during.inflight].sort(), 'wait clocks only run for started models');
   await wait(200);
   assert.equal(slow.requests.length, 4, 'all four eventually run');
 }
@@ -465,6 +496,72 @@ assert.match(failureText({}, { provider: 'x' }), /调用失败/);
   assert.equal(persisted.intervalMinutes, 5);
 }
 
+// ── the panel gets `maxImages` per model, not per folder ──────────────────
+// A global read cap would silently divide the history: four models, twelve
+// drawings → three each, which reads as "the cap shrank".
+{
+  const many = path.join(tmp, 'per-model-cap');
+  for (let i = 0; i < 3; i += 1) {
+    saveRun(many, 'm1', PAGE, i, 'p1', { now: Date.now() + i * 1000 });
+    saveRun(many, 'm2', PAGE, i, 'p2', { now: Date.now() + i * 1000 + 500 });
+  }
+  const t = mount(makeLlm(), { dir: many, runOnStart: false, maxImages: 2 });
+  const listRes = fakeRes();
+  await t['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), listRes);
+  const payload = JSON.parse(listRes.body);
+  assert.equal(payload.maxImages, 2);
+  assert.equal(payload.images.length, 4, 'two per model survive the boot prune… and both are shown');
+  assert.deepEqual(payload.summary.map((r) => [r.model, r.count]).sort(), [['m1', 2], ['m2', 2]], 'each model keeps its own two');
+}
+
+// ── a rejected schedule patch must not change live state ──────────────────
+{
+  const t = mount(makeLlm(), { dir: path.join(tmp, 'schedule-atomic'), runOnStart: false });
+  const patch = async (body) => {
+    const res = fakeRes();
+    await t['/api/pelican-watch/schedule'].handler({ ...req('POST', '/api/pelican-watch/schedule'), async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(body)); } }, res);
+    return { code: res.code, body: JSON.parse(res.body) };
+  };
+  const bad = await patch({ autoEnabled: false, intervalMinutes: 0 });
+  assert.equal(bad.code, 400, 'the invalid interval is refused');
+  const listRes = fakeRes();
+  await t['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), listRes);
+  const payload = JSON.parse(listRes.body);
+  assert.equal(payload.autoEnabled, true, 'and the live schedule was not half-applied');
+  assert.ok(typeof payload.nextRunAt === 'number', 'the timer is still armed');
+  const stored = loadSettings(path.join(tmp, 'schedule-atomic'));
+  assert.equal(stored.autoEnabled, undefined, 'nothing was persisted either');
+}
+
+// ── /run answers honestly: nothing to run, or already running ─────────────
+{
+  const t = mount(makeLlm(), { dir: path.join(tmp, 'run-guard'), runOnStart: false, targets: [{ provider: 'p1', model: 'm1' }] });
+  const post = async (body) => {
+    const res = fakeRes();
+    await t['/api/pelican-watch/run'].handler({ ...req('POST', '/api/pelican-watch/run'), async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(body)); } }, res);
+    return { code: res.code, body: JSON.parse(res.body) };
+  };
+  const gone = await post({ model: 'not-selected', provider: 'p1' });
+  assert.equal(gone.code, 400, 'a band that is no longer selected cannot be probed');
+  assert.match(gone.body.error, /不在检测列表/, 'and says why');
+
+  const hang = makeLlm({ hang: true });
+  const slow = mount(hang, { dir: path.join(tmp, 'run-again'), runOnStart: false, targets: [{ provider: 'p1', model: 'm1' }] });
+  const start = async () => {
+    const res = fakeRes();
+    await slow['/api/pelican-watch/run'].handler(req('POST', '/api/pelican-watch/run'), res);
+    return JSON.parse(res.body);
+  };
+  assert.equal((await start()).started, true, 'the first request starts a pass');
+  await wait(40);
+  const second = await start();
+  assert.equal(second.started, false, 'a second request does not pretend to start another');
+  assert.equal(second.running, true);
+  const stopRes = fakeRes();
+  await slow['/api/pelican-watch/stop'].handler(req('POST', '/api/pelican-watch/stop'), stopRes);
+  await wait(60);
+}
+
 // ── runOnStart: does booting fire a pass right away? ──────────────────────
 {
   // starts off: no automatic pass
@@ -480,6 +577,40 @@ assert.match(failureText({}, { provider: 'x' }), /调用失败/);
   assert.equal(on.requests.length, 1, 'runOnStart:true probes once');
   await wait(200);
   assert.equal(on.requests.length, 1, 'and only once (the next pass waits a full interval)');
+}
+
+// ── unloading mid-pass must leave no armed timer behind ───────────────────
+// The pass runs inside the timer callback; aborting it on dispose resolves that
+// callback, whose `finally` used to arm a fresh interval timer that nothing
+// could clear — probing (and paying) after the plugin was gone. `setTimeout` is
+// instrumented for the whole scenario, so a re-arm is observable; the waits use
+// the real timer directly.
+{
+  const realSetTimeout = globalThis.setTimeout;
+  const sleep = (ms) => new Promise((resolve) => realSetTimeout(resolve, ms));
+  const armed = [];
+  const mine = resets.length;
+  globalThis.setTimeout = (fn, ms) => { armed.push({ fn, ms }); return 0; };
+  try {
+    const hang = makeLlm({ hang: true });
+    mount(hang, { dir: path.join(tmp, 'unload'), runOnStart: true, targets: [{ provider: 'p1', model: 'm1' }] });
+    assert.equal(armed.length, 1, 'booting armed the first pass');
+    assert.equal(armed[0].ms, 8000, 'the boot delay');
+    armed[0].fn(); // the boot timer fires; the request timeout is armed too
+    const fired = armed.length;
+    assert.ok(fired >= 2, 'the pass started and armed its own request timeout');
+
+    const own = resets.slice(mine);
+    for (const reset of own) reset(); // unload the plugin mid-pass
+    await sleep(120);
+    assert.equal(armed.length, fired, 'nothing was armed after disposal');
+
+    for (const reset of own) reset(); // and a repeated dispose is harmless
+    await sleep(40);
+    assert.equal(armed.length, fired, 'still nothing armed');
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
 }
 
 // ── a fresh install has no fabricated target ──────────────────────────────
