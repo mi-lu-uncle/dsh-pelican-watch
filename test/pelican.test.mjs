@@ -472,6 +472,9 @@ assert.match(failureText({}, { provider: 'x' }), /调用失败/);
   await t['/api/pelican-watch/list'].handler(req('GET', '/api/pelican-watch/list'), duringRes);
   const during = JSON.parse(duringRes.body);
   assert.equal(during.inflight.length, 2, 'only started models are "probing"');
+  assert.equal(during.queued.length, 2, 'the rest are queued, and the panel can say so');
+  assert.deepEqual([...during.inflight, ...during.queued].sort(), ['c1', 'c2', 'c3', 'c4'].map((m) => `deepseek-account|${m}`).sort(),
+    'every target is either in flight or queued');
   assert.equal(during.total, 4, 'while the pass still knows its size');
   assert.deepEqual(Object.keys(during.inflightSince).sort(), [...during.inflight].sort(), 'wait clocks only run for started models');
   await wait(200);
@@ -710,6 +713,11 @@ assert.match(failureText({}, { provider: 'x' }), /调用失败/);
   for (const m of source.matchAll(/className:\s*"([^"]+)"/g)) for (const c of m[1].split(/\s+/)) if (c) jsClasses.add(c);
   assert.ok(jsClasses.size >= 4, 'the panel still uses the class-based rules');
   assert.deepEqual([...jsClasses].filter((c) => !cssClasses.has(c)), [], 'every className has a CSS rule');
+  // .pw-btn:hover outranks .pw-btn-primary, so the filled button has to restate
+  // its background on hover — without it the white label sat on light grey and
+  // the button looked like it vanished under the pointer.
+  assert.ok(/\.pw-btn:not\(\.pw-btn-primary\):hover\{/.test(sheet), 'the plain hover skips the filled button');
+  assert.ok(/\.pw-btn-primary:hover\{background:/.test(sheet), 'and the filled button restates its background');
 }
 
 for (const reset of resets) reset();

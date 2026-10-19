@@ -343,6 +343,24 @@ const 看大图Label = '看大图';
   }
 }
 
+// ── 1e2. a queued band's button is disabled, not clickable ─────────────────
+// During a full pass only `concurrency` models are requesting; the rest are
+// queued. Their request is already on its way, so a click would be dropped.
+{
+  payload = {
+    ...basePayload,
+    running: true, done: 0, total: 3, lastRunAt: null,
+    inflight: ['taotoken|deepseek-flash'],
+    inflightSince: { 'taotoken|deepseek-flash': Date.now() - 5000 },
+    queued: ['taotoken|deepseek-v4-flash', 'taotoken|deepseek-v4-flash-vision-exp'],
+  };
+  await mount();
+  const probes = seen.buttons.filter((b) => b.title === 只测Hint);
+  assert.equal(probes.length, TARGETS.length, 'every band still shows its button');
+  assert.equal(probes.filter((b) => b.disabled === true).length, TARGETS.length,
+    'and all of them are disabled while their requests are queued or running');
+}
+
 // ── 1f. a band's ▷ probes that model only ──────────────────────────────────
 {
   payload = basePayload;
