@@ -116,6 +116,11 @@ default), one drawing each.
 - `maxTokens` is not sent by default: reasoning models spend tens of thousands of
   completion tokens before they draw, and a tight ceiling would truncate the SVG
   instead of speeding anything up.
+- **A truncated drawing is reported as such**: when the answer stops at the
+  output ceiling (an `<svg>` without its closing tag), the band says
+  「回答被截断（已输出 N tokens）：SVG 没有画完，多半是达到模型的输出上限」 instead of the
+  vague 「未检出 SVG」, and the half-drawn page is not kept as history. Raise
+  `maxTokens` in the config to give a verbose model more room.
 
 ## Configuration
 

@@ -453,6 +453,42 @@ assert.match(failureText({ code: 'RATE_LIMIT', message: '429' }), /限流.*429/)
 assert.match(failureText({ code: 'WEIRD', message: 'boom' }), /boom/);
 assert.match(failureText({}, { provider: 'x' }), /调用失败/);
 
+// ── a drawing cut off mid-element is reported, not saved as "no SVG" ──────
+// Seen on a real run: 9 KB of a real HTML page whose <svg> stops inside a
+// `keyTimes` attribute, saved with ok:false and shown as 「未检出 SVG」.
+{
+  const partial = '<!doctype html><html><body><svg viewBox="0 0 10 10">'
+    + '<animateTransform attributeName="transform" type="rotate" values="0;1;2" keyTimes="0;0.5;0';
+
+  const stopped = makeLlm({ answer: partial });
+  await assert.rejects(
+    drawWithLlm(stopped, { provider: 'p1', model: 'm1' }, 'draw'),
+    /被截断.*没有画完/,
+    'an unclosed <svg> is reported as truncation',
+  );
+
+  // Some providers name it: a max-tokens finish is truncation even if the text
+  // happens to look complete.
+  const capped = {
+    ...makeLlm(),
+    requests: [],
+    stream: () => (async function* () {
+      yield { type: 'text-delta', index: 0, text: '<svg><circle r="1"/></svg>' };
+      yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 4096 } };
+      yield { type: 'finish', reason: { kind: 'max-tokens' } };
+    })(),
+  };
+  await assert.rejects(
+    drawWithLlm(capped, { provider: 'p1', model: 'm1' }, 'draw'),
+    /已输出 4096 tokens/,
+    'a max-tokens finish reports how much was produced',
+  );
+
+  // A refusal (no svg at all) is still a saved "no drawing", not truncation.
+  const refusal = makeLlm({ answer: '抱歉，我不能画这个。' });
+  assert.equal(await drawWithLlm(refusal, { provider: 'p1', model: 'm1' }, 'draw'), '抱歉，我不能画这个。');
+}
+
 // ── a hung model is cut off by the per-request timeout ────────────────────
 {
   const hung = makeLlm({ hang: true });
